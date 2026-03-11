@@ -1,3 +1,7 @@
 paho-mqtt
 pandas
 matplotlib
+plotly
+streamlit
+supabase
+python-dotenv
