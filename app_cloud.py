@@ -21,8 +21,19 @@ st.caption("Real-time and historical data from Aranet Base Station")
 
 
 # ============================================================
+# SECRETS
+# ============================================================
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except Exception as e:
+    st.error(f"Missing Streamlit secrets: {e}")
+    st.stop()
+
+
+# ============================================================
 # UNITS CONFIGURATION
-# Adjust units here if needed.
+# Update this dictionary as needed.
 # ============================================================
 VARIABLE_UNITS = {
     "radon": "Bq/m³",
@@ -38,14 +49,11 @@ VARIABLE_UNITS = {
 
 
 # ============================================================
-# SUPABASE CONNECTION
+# SUPABASE
 # ============================================================
 @st.cache_resource
 def get_supabase():
-    return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"],
-    )
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ============================================================
@@ -166,10 +174,13 @@ def compute_metrics(df: pd.DataFrame):
     }
 
 
+def safe_dataframe(df: pd.DataFrame):
+    st.dataframe(df, use_container_width=True)
+
+
 def fetch_all(query_builder, page_size: int = 1000):
     """
-    Fetch all rows from a Supabase query using pagination.
-    Supabase REST responses are commonly limited to 1000 rows per request.
+    Fetch all rows from Supabase using pagination.
     """
     all_rows = []
     start = 0
@@ -178,6 +189,7 @@ def fetch_all(query_builder, page_size: int = 1000):
         end = start + page_size - 1
         response = query_builder.range(start, end).execute()
         batch = response.data or []
+
         if not batch:
             break
 
@@ -225,7 +237,14 @@ def load_sensors():
     df = pd.DataFrame(rows)
     if df.empty:
         return pd.DataFrame(
-            columns=["sensor_ref", "base_id", "sensor_id", "sensor_name", "product_number", "updated_at"]
+            columns=[
+                "sensor_ref",
+                "base_id",
+                "sensor_id",
+                "sensor_name",
+                "product_number",
+                "updated_at",
+            ]
         )
 
     bases_df = load_bases()
@@ -290,28 +309,54 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
         return pd.DataFrame()
 
     df = df.copy()
-    df["payload_time_utc"] = pd.to_datetime(df["payload_time_utc"], errors="coerce", utc=True)
-    df["received_at_utc"] = pd.to_datetime(df["received_at_utc"], errors="coerce", utc=True)
-    df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
+
+    if "payload_time_utc" in df.columns:
+        df["payload_time_utc"] = pd.to_datetime(
+            df["payload_time_utc"], errors="coerce", utc=True
+        )
+
+    if "received_at_utc" in df.columns:
+        df["received_at_utc"] = pd.to_datetime(
+            df["received_at_utc"], errors="coerce", utc=True
+        )
+
+    if "value_num" in df.columns:
+        df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
 
     df = df.dropna(subset=["payload_time_utc", "value_num"])
     df = df.sort_values("payload_time_utc").reset_index(drop=True)
 
     sensors_df = load_sensors()
-    meta_cols = ["sensor_ref", "base_id", "sensor_id", "sensor_name", "product_number", "base_name"]
-    sensors_meta = sensors_df[[c for c in meta_cols if c in sensors_df.columns]].drop_duplicates()
+    if not sensors_df.empty:
+        sensors_meta = sensors_df[
+            [
+                c for c in [
+                    "sensor_ref",
+                    "base_id",
+                    "base_name",
+                    "sensor_id",
+                    "sensor_name",
+                    "product_number",
+                ]
+                if c in sensors_df.columns
+            ]
+        ].drop_duplicates()
 
-    df = df.merge(sensors_meta, on="sensor_ref", how="left", suffixes=("", "_meta"))
+        df = df.merge(
+            sensors_meta,
+            on="sensor_ref",
+            how="left",
+            suffixes=("", "_meta"),
+        )
 
-    for col in ["sensor_id", "base_id", "sensor_name"]:
-        meta_col = f"{col}_meta"
-        if meta_col in df.columns:
-            df[col] = df[meta_col].combine_first(df.get(col))
-            df = df.drop(columns=[meta_col])
-
-    if "base_name_meta" in df.columns:
-        df["base_name"] = df["base_name_meta"].combine_first(df.get("base_name"))
-        df = df.drop(columns=["base_name_meta"])
+        for col in ["base_id", "sensor_id", "sensor_name", "base_name", "product_number"]:
+            meta_col = f"{col}_meta"
+            if meta_col in df.columns:
+                if col in df.columns:
+                    df[col] = df[meta_col].combine_first(df[col])
+                else:
+                    df[col] = df[meta_col]
+                df = df.drop(columns=[meta_col])
 
     return df
 
@@ -336,11 +381,16 @@ for _, row in sensors_df.iterrows():
     label, sensor_ref = format_sensor_label(row)
     sensor_options[sensor_ref] = label
 
+all_sensor_refs = list(sensor_options.keys())
+
+select_all_sensors = st.sidebar.checkbox("Select all detectors", value=False)
+default_sensor_selection = all_sensor_refs if select_all_sensors else all_sensor_refs[:1]
+
 selected_refs = st.sidebar.multiselect(
     "Select Sensors",
-    options=list(sensor_options.keys()),
+    options=all_sensor_refs,
+    default=default_sensor_selection,
     format_func=lambda x: sensor_options[x],
-    default=list(sensor_options.keys())[:1],
 )
 
 if not selected_refs:
@@ -357,10 +407,15 @@ if vars_df.empty or "variable" not in vars_df.columns:
     st.warning("No measurements available for the selected sensors.")
     st.stop()
 
+all_variables = vars_df["variable"].dropna().unique().tolist()
+
+select_all_variables = st.sidebar.checkbox("Select all variables", value=False)
+default_variable_selection = all_variables if select_all_variables else all_variables[: min(3, len(all_variables))]
+
 selected_variables = st.sidebar.multiselect(
     "Select Measurements",
-    options=vars_df["variable"].dropna().unique().tolist(),
-    default=vars_df["variable"].dropna().unique().tolist()[: min(3, len(vars_df))],
+    options=all_variables,
+    default=default_variable_selection,
 )
 
 if not selected_variables:
@@ -403,6 +458,26 @@ if data_df.empty:
     st.stop()
 
 data_df["sensor_label"] = data_df.apply(safe_sensor_name, axis=1)
+
+
+# ============================================================
+# DEBUG / SANITY CHECK
+# ============================================================
+with st.expander("Debug / data sanity check"):
+    st.write("Loaded columns:")
+    st.write(list(data_df.columns))
+
+    st.write("First rows:")
+    safe_dataframe(data_df.head(10))
+
+    if "value_num" in data_df.columns:
+        st.write("value_num summary:")
+        st.write(data_df["value_num"].describe())
+
+    if {"variable", "value_num", "value_text"}.issubset(data_df.columns):
+        st.write("Sample variable/value pairs:")
+        sample_debug = data_df[["variable", "value_num", "value_text"]].head(20)
+        safe_dataframe(sample_debug)
 
 
 # ============================================================
@@ -478,6 +553,7 @@ else:
         hovermode="x unified",
         legend_title="Sensor",
     )
+
     if tick_format:
         layout_kwargs["yaxis"] = dict(tickformat=tick_format)
 
@@ -486,7 +562,7 @@ else:
 
 
 # ============================================================
-# SNAPSHOT
+# CURRENT SNAPSHOT
 # ============================================================
 st.subheader(f"Current Snapshot for '{overlay_variable}'")
 
@@ -574,6 +650,7 @@ for variable in selected_variables:
         hovermode="x unified",
         legend_title="Sensor",
     )
+
     if tick_format:
         layout_kwargs["yaxis"] = dict(tickformat=tick_format)
 
@@ -602,7 +679,7 @@ for col in latest_table.columns:
         renamed_columns[col] = with_unit(str(col), str(col))
 
 latest_table = latest_table.rename(columns=renamed_columns)
-st.dataframe(latest_table, use_container_width=True, hide_index=True)
+safe_dataframe(latest_table)
 
 
 # ============================================================
@@ -624,6 +701,7 @@ with st.expander("View filtered raw data"):
             "sensor_ref",
             "variable",
             "value_num",
+            "value_text",
             "unit",
             "display_value",
             "base_id",
@@ -633,11 +711,7 @@ with st.expander("View filtered raw data"):
         ] if col in display_df.columns
     ]
 
-    st.dataframe(
-        display_df[display_columns],
-        use_container_width=True,
-        hide_index=True,
-    )
+    safe_dataframe(display_df[display_columns])
 
 csv_df = data_df.copy()
 csv = csv_df.to_csv(index=False).encode("utf-8")
