@@ -175,7 +175,13 @@ def compute_metrics(df: pd.DataFrame):
 
 
 def safe_dataframe(df: pd.DataFrame):
-    st.dataframe(df, use_container_width=True)
+    # Creiamo una copia per non rovinare i dati originali
+    df_display = df.copy()
+    # Trasformiamo tutto ciò che è testo/oggetto in stringa semplice
+    for col in df_display.columns:
+        if df_display[col].dtype == 'object':
+            df_display[col] = df_display[col].astype(str)
+    st.dataframe(df_display, use_container_width=True)
 
 
 def fetch_all(query_builder, page_size: int = 1000):
@@ -730,3 +736,4 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
