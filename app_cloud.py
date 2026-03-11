@@ -33,7 +33,6 @@ except Exception as e:
 
 # ============================================================
 # UNITS CONFIGURATION
-# Update this dictionary as needed.
 # ============================================================
 VARIABLE_UNITS = {
     "radon": "Bq/m³",
@@ -54,6 +53,37 @@ VARIABLE_UNITS = {
 @st.cache_resource
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+# ============================================================
+# SAFE DISPLAY HELPERS FOR STREAMLIT CLOUD
+# ============================================================
+def dataframe_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert dataframe to Streamlit-safe dtypes.
+    This avoids Arrow/LargeUtf8 issues on Streamlit Cloud.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    for col in out.columns:
+        # Convert timezone-aware datetimes to strings for stable display
+        if pd.api.types.is_datetime64_any_dtype(out[col]):
+            out[col] = out[col].astype(str)
+
+        # Force pandas string/object columns to plain Python strings
+        elif pd.api.types.is_string_dtype(out[col]) or out[col].dtype == "object":
+            out[col] = out[col].astype(object)
+
+    # Ensure column names are plain strings
+    out.columns = [str(c) for c in out.columns]
+    return out
+
+
+def safe_dataframe(df: pd.DataFrame):
+    st.dataframe(dataframe_for_streamlit(df), use_container_width=True)
 
 
 # ============================================================
@@ -172,16 +202,6 @@ def compute_metrics(df: pd.DataFrame):
         "last_update": last_update,
         "count": len(df),
     }
-
-
-def safe_dataframe(df: pd.DataFrame):
-    # Creiamo una copia per non rovinare i dati originali
-    df_display = df.copy()
-    # Trasformiamo tutto ciò che è testo/oggetto in stringa semplice
-    for col in df_display.columns:
-        if df_display[col].dtype == 'object':
-            df_display[col] = df_display[col].astype(str)
-    st.dataframe(df_display, use_container_width=True)
 
 
 def fetch_all(query_builder, page_size: int = 1000):
@@ -316,6 +336,7 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
 
     df = df.copy()
 
+    # Explicit typing
     if "payload_time_utc" in df.columns:
         df["payload_time_utc"] = pd.to_datetime(
             df["payload_time_utc"], errors="coerce", utc=True
@@ -329,9 +350,16 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
     if "value_num" in df.columns:
         df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
 
+    if "value_text" in df.columns:
+        df["value_text"] = df["value_text"].astype(str)
+
+    # Drop broken rows
     df = df.dropna(subset=["payload_time_utc", "value_num"])
+
+    # Sort chronologically
     df = df.sort_values("payload_time_utc").reset_index(drop=True)
 
+    # Attach sensor metadata
     sensors_df = load_sensors()
     if not sensors_df.empty:
         sensors_meta = sensors_df[
@@ -368,6 +396,16 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
 
 
 # ============================================================
+# SIDEBAR STATE
+# ============================================================
+if "selected_refs" not in st.session_state:
+    st.session_state.selected_refs = []
+
+if "selected_variables" not in st.session_state:
+    st.session_state.selected_variables = []
+
+
+# ============================================================
 # SIDEBAR
 # ============================================================
 st.sidebar.header("Data Selection")
@@ -389,14 +427,22 @@ for _, row in sensors_df.iterrows():
 
 all_sensor_refs = list(sensor_options.keys())
 
-select_all_sensors = st.sidebar.checkbox("Select all detectors", value=False)
-default_sensor_selection = all_sensor_refs if select_all_sensors else all_sensor_refs[:1]
+col_a, col_b = st.sidebar.columns(2)
+if col_a.button("Select all detectors"):
+    st.session_state.selected_refs = all_sensor_refs
+
+if col_b.button("Clear detectors"):
+    st.session_state.selected_refs = []
+
+if not st.session_state.selected_refs and all_sensor_refs:
+    st.session_state.selected_refs = all_sensor_refs[:1]
 
 selected_refs = st.sidebar.multiselect(
     "Select Sensors",
     options=all_sensor_refs,
-    default=default_sensor_selection,
+    default=st.session_state.selected_refs,
     format_func=lambda x: sensor_options[x],
+    key="selected_refs",
 )
 
 if not selected_refs:
@@ -415,13 +461,21 @@ if vars_df.empty or "variable" not in vars_df.columns:
 
 all_variables = vars_df["variable"].dropna().unique().tolist()
 
-select_all_variables = st.sidebar.checkbox("Select all variables", value=False)
-default_variable_selection = all_variables if select_all_variables else all_variables[: min(3, len(all_variables))]
+col_c, col_d = st.sidebar.columns(2)
+if col_c.button("Select all variables"):
+    st.session_state.selected_variables = all_variables
+
+if col_d.button("Clear variables"):
+    st.session_state.selected_variables = []
+
+if not st.session_state.selected_variables and all_variables:
+    st.session_state.selected_variables = all_variables[: min(3, len(all_variables))]
 
 selected_variables = st.sidebar.multiselect(
     "Select Measurements",
     options=all_variables,
-    default=default_variable_selection,
+    default=st.session_state.selected_variables,
+    key="selected_variables",
 )
 
 if not selected_variables:
@@ -482,8 +536,7 @@ with st.expander("Debug / data sanity check"):
 
     if {"variable", "value_num", "value_text"}.issubset(data_df.columns):
         st.write("Sample variable/value pairs:")
-        sample_debug = data_df[["variable", "value_num", "value_text"]].head(20)
-        safe_dataframe(sample_debug)
+        safe_dataframe(data_df[["variable", "value_num", "value_text"]].head(20))
 
 
 # ============================================================
@@ -685,6 +738,7 @@ for col in latest_table.columns:
         renamed_columns[col] = with_unit(str(col), str(col))
 
 latest_table = latest_table.rename(columns=renamed_columns)
+
 safe_dataframe(latest_table)
 
 
@@ -736,4 +790,3 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
-
