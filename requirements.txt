@@ -5,3 +5,4 @@ plotly
 streamlit
 supabase
 python-dotenv
+altair==4.2.2
