@@ -56,34 +56,30 @@ def get_supabase():
 
 
 # ============================================================
-# SAFE DISPLAY HELPERS FOR STREAMLIT CLOUD
+# SAFE TABLE DISPLAY
 # ============================================================
-def dataframe_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
+def dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert dataframe to Streamlit-safe dtypes.
-    This avoids Arrow/LargeUtf8 issues on Streamlit Cloud.
+    Convert a dataframe to plain string/object types that Streamlit Cloud
+    can render without Arrow LargeUtf8 issues.
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
-    out = df.copy()
+    out = df.copy().reset_index(drop=True)
 
     for col in out.columns:
-        # Convert timezone-aware datetimes to strings for stable display
         if pd.api.types.is_datetime64_any_dtype(out[col]):
-            out[col] = out[col].astype(str)
+            out[col] = out[col].dt.strftime("%Y-%m-%d %H:%M:%S %Z").fillna("")
+        else:
+            out[col] = out[col].map(lambda x: "" if pd.isna(x) else str(x))
 
-        # Force pandas string/object columns to plain Python strings
-        elif pd.api.types.is_string_dtype(out[col]) or out[col].dtype == "object":
-            out[col] = out[col].astype(object)
-
-    # Ensure column names are plain strings
     out.columns = [str(c) for c in out.columns]
     return out
 
 
-def safe_dataframe(df: pd.DataFrame):
-    st.dataframe(dataframe_for_streamlit(df), use_container_width=True)
+def safe_table(df: pd.DataFrame):
+    st.table(dataframe_for_display(df))
 
 
 # ============================================================
@@ -205,9 +201,6 @@ def compute_metrics(df: pd.DataFrame):
 
 
 def fetch_all(query_builder, page_size: int = 1000):
-    """
-    Fetch all rows from Supabase using pagination.
-    """
     all_rows = []
     start = 0
 
@@ -336,30 +329,14 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
 
     df = df.copy()
 
-    # Explicit typing
-    if "payload_time_utc" in df.columns:
-        df["payload_time_utc"] = pd.to_datetime(
-            df["payload_time_utc"], errors="coerce", utc=True
-        )
+    df["payload_time_utc"] = pd.to_datetime(df["payload_time_utc"], errors="coerce", utc=True)
+    df["received_at_utc"] = pd.to_datetime(df["received_at_utc"], errors="coerce", utc=True)
+    df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
+    df["value_text"] = df["value_text"].astype(str)
 
-    if "received_at_utc" in df.columns:
-        df["received_at_utc"] = pd.to_datetime(
-            df["received_at_utc"], errors="coerce", utc=True
-        )
-
-    if "value_num" in df.columns:
-        df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
-
-    if "value_text" in df.columns:
-        df["value_text"] = df["value_text"].astype(str)
-
-    # Drop broken rows
     df = df.dropna(subset=["payload_time_utc", "value_num"])
-
-    # Sort chronologically
     df = df.sort_values("payload_time_utc").reset_index(drop=True)
 
-    # Attach sensor metadata
     sensors_df = load_sensors()
     if not sensors_df.empty:
         sensors_meta = sensors_df[
@@ -427,11 +404,11 @@ for _, row in sensors_df.iterrows():
 
 all_sensor_refs = list(sensor_options.keys())
 
-col_a, col_b = st.sidebar.columns(2)
-if col_a.button("Select all detectors"):
+col1, col2 = st.sidebar.columns(2)
+if col1.button("Select all detectors"):
     st.session_state.selected_refs = all_sensor_refs
 
-if col_b.button("Clear detectors"):
+if col2.button("Clear detectors"):
     st.session_state.selected_refs = []
 
 if not st.session_state.selected_refs and all_sensor_refs:
@@ -461,11 +438,11 @@ if vars_df.empty or "variable" not in vars_df.columns:
 
 all_variables = vars_df["variable"].dropna().unique().tolist()
 
-col_c, col_d = st.sidebar.columns(2)
-if col_c.button("Select all variables"):
+col3, col4 = st.sidebar.columns(2)
+if col3.button("Select all variables"):
     st.session_state.selected_variables = all_variables
 
-if col_d.button("Clear variables"):
+if col4.button("Clear variables"):
     st.session_state.selected_variables = []
 
 if not st.session_state.selected_variables and all_variables:
@@ -528,7 +505,7 @@ with st.expander("Debug / data sanity check"):
     st.write(list(data_df.columns))
 
     st.write("First rows:")
-    safe_dataframe(data_df.head(10))
+    safe_table(data_df.head(10))
 
     if "value_num" in data_df.columns:
         st.write("value_num summary:")
@@ -536,7 +513,7 @@ with st.expander("Debug / data sanity check"):
 
     if {"variable", "value_num", "value_text"}.issubset(data_df.columns):
         st.write("Sample variable/value pairs:")
-        safe_dataframe(data_df[["variable", "value_num", "value_text"]].head(20))
+        safe_table(data_df[["variable", "value_num", "value_text"]].head(20))
 
 
 # ============================================================
@@ -738,8 +715,7 @@ for col in latest_table.columns:
         renamed_columns[col] = with_unit(str(col), str(col))
 
 latest_table = latest_table.rename(columns=renamed_columns)
-
-safe_dataframe(latest_table)
+safe_table(latest_table)
 
 
 # ============================================================
@@ -771,7 +747,7 @@ with st.expander("View filtered raw data"):
         ] if col in display_df.columns
     ]
 
-    safe_dataframe(display_df[display_columns])
+    safe_table(display_df[display_columns])
 
 csv_df = data_df.copy()
 csv = csv_df.to_csv(index=False).encode("utf-8")
