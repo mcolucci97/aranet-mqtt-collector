@@ -90,7 +90,7 @@ header_col1, header_col2, header_col3 = st.columns([1.1, 4.6, 1.2])
 
 with header_col1:
     if CEA_LOGO.exists():
-        st.image(str(CEA_LOGO), use_container_width=True)
+        st.image(str(CEA_LOGO), use_column_width=True)
 
 with header_col2:
     st.markdown(
@@ -111,6 +111,10 @@ with header_col2:
         """,
         unsafe_allow_html=True,
     )
+
+with header_col3:
+    if RADONNET_LOGO.exists():
+        st.image(str(RADONNET_LOGO), use_column_width=True)
 
 with header_col3:
     if RADONNET_LOGO.exists():
@@ -986,5 +990,6 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
