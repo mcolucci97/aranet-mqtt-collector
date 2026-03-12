@@ -743,19 +743,36 @@ range_mode = st.sidebar.radio(
     "Time Range",
     ["Last N days", "Last 24 hours"],
     index=0,
+    key="time_range_radio",
 )
 
 if range_mode == "Last N days":
-    days = st.sidebar.slider("Historical Range (Days)", min_value=1, max_value=30, value=7)
+    days = st.sidebar.slider(
+        "Historical Range (Days)",
+        min_value=1,
+        max_value=30,
+        value=7,
+        key="historical_days_slider",
+    )
     start_dt = datetime.now(timezone.utc) - timedelta(days=days)
 else:
     start_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
 start_utc = start_dt.isoformat()
 
-show_points = st.sidebar.checkbox("Show markers", value=False)
-show_plot_debug = st.sidebar.checkbox("Show plot debug", value=False)
-auto_refresh = st.sidebar.checkbox("Auto-refresh every minute", value=False)
+#show_plot_debug = st.sidebar.checkbox("Show plot debug", value=False)
+
+show_points = st.sidebar.checkbox(
+    "Show markers",
+    value=False,
+    key="show_markers_checkbox",
+)
+
+auto_refresh = st.sidebar.checkbox(
+    "Auto-refresh every minute",
+    value=False,
+    key="auto_refresh_checkbox",
+)
 
 
 # ============================================================
@@ -1011,6 +1028,7 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
 
