@@ -104,13 +104,22 @@ BASE_DIR = Path(__file__).resolve().parent
 CEA_LOGO = BASE_DIR / "cea_logo.png"
 RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
 
-header_col1, header_col2, header_col3 = st.columns([1.2, 4.8, 1.4])
 
-with header_col1:
-    if CEA_LOGO.exists():
-        st.image(str(CEA_LOGO), use_column_width=True)
+header_logo_col, header_text_col = st.columns([1.3, 6])
 
-with header_col2:
+with header_logo_col:
+
+    logo_cols = st.columns(2)
+
+    with logo_cols[0]:
+        if CEA_LOGO.exists():
+            st.image(str(CEA_LOGO), width=110)
+
+    with logo_cols[1]:
+        if RADONNET_LOGO.exists():
+            st.image(str(RADONNET_LOGO), width=110)
+
+with header_text_col:
     st.markdown(
         """
         <div class="main-header">
@@ -129,10 +138,6 @@ with header_col2:
         """,
         unsafe_allow_html=True,
     )
-
-with header_col3:
-    if RADONNET_LOGO.exists():
-        st.image(str(RADONNET_LOGO), use_column_width=True)
 
 st.markdown(
     """
@@ -752,22 +757,22 @@ if data_df.empty:
 # ============================================================
 # DEBUG / SANITY CHECK
 # ============================================================
-with st.expander("Debug / data sanity check"):
-    st.write("Loaded columns:")
-    st.write(list(data_df.columns))
-
-    st.write("Dtypes:")
-    st.write(data_df.dtypes.astype(str))
-
-    st.write("First rows:")
-    safe_table(data_df.head(10), height=300)
-
-    st.write("value_num summary:")
-    st.write(data_df["value_num"].describe())
-
-    st.write("Sample variable/value pairs:")
-    sample_cols = [c for c in ["payload_time_utc", "sensor_label", "variable", "value_num", "value_text"] if c in data_df.columns]
-    safe_table(data_df[sample_cols].head(20), height=300)
+#with st.expander("Debug / data sanity check"):
+ #   st.write("Loaded columns:")
+  #  st.write(list(data_df.columns))
+#
+ #   st.write("Dtypes:")
+  #  st.write(data_df.dtypes.astype(str))
+#
+ #   st.write("First rows:")
+  #  safe_table(data_df.head(10), height=300)
+#
+ #   st.write("value_num summary:")
+  #  st.write(data_df["value_num"].describe())
+#
+ #   st.write("Sample variable/value pairs:")
+  #  sample_cols = [c for c in ["payload_time_utc", "sensor_label", "variable", "value_num", "value_text"] if c in data_df.columns]
+   # safe_table(data_df[sample_cols].head(20), height=300)
 
 
 # ============================================================
@@ -984,3 +989,4 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
