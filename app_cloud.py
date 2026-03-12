@@ -2,14 +2,13 @@
 """
 Streamlit dashboard for Aranet data stored in Supabase.
 
-Goals of this version:
-- avoid Streamlit Arrow / LargeUtf8 table errors
-- plot the REAL measurement value (value_num), not row order / point index
-- keep CSV export correct, with numeric value_num
-- stay compatible with Python 3.12
+Compatible with Python 3.12.
+Designed to:
+- avoid Streamlit Arrow / LargeUtf8 table issues
+- plot the real measurement value (value_num)
+- keep CSV export correct
+- show institutional CEA / RadonNET branding
 """
-
-from __future__ import annotations
 
 import math
 import time
@@ -19,8 +18,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from supabase import Client, create_client
-
+from supabase import create_client
 
 
 # ============================================================
@@ -32,61 +30,81 @@ st.set_page_config(
     layout="wide",
 )
 
-# ------------------------------------------------------------
-# CUSTOM CSS
-# ------------------------------------------------------------
+
+# ============================================================
+# CUSTOM STYLE
+# ============================================================
 st.markdown(
     """
     <style>
         .main-header {
-            padding: 0.3rem 0 1.2rem 0;
+            padding: 0.25rem 0 1rem 0;
             border-bottom: 1px solid rgba(120,120,120,0.25);
-            margin-bottom: 1.2rem;
+            margin-bottom: 1rem;
         }
 
         .main-title {
-            font-size: 2.1rem;
+            font-size: 2rem;
             font-weight: 700;
             line-height: 1.2;
             margin-bottom: 0.25rem;
         }
 
         .main-subtitle {
-            font-size: 1.05rem;
+            font-size: 1.02rem;
             color: #555;
-            margin-bottom: 0.2rem;
+            margin-bottom: 0.25rem;
         }
 
         .main-description {
-            font-size: 0.98rem;
+            font-size: 0.97rem;
             color: #666;
             line-height: 1.5;
-            margin-top: 0.5rem;
+            margin-top: 0.4rem;
         }
 
         .section-note {
             background: rgba(240, 242, 246, 0.7);
             border: 1px solid rgba(120,120,120,0.18);
             border-radius: 10px;
-            padding: 0.85rem 1rem;
+            padding: 0.9rem 1rem;
             margin-bottom: 1rem;
         }
 
         .section-note strong {
             font-weight: 700;
         }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.92rem;
+        }
+
+        th, td {
+            padding: 0.35rem 0.5rem;
+            border: 1px solid #ddd;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        th {
+            background-color: #f5f5f5;
+        }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ------------------------------------------------------------
-# HEADER WITH LOGOS
-# ------------------------------------------------------------
-CEA_LOGO = Path("cea_logo.png")
-RADONNET_LOGO = Path("radonnet_logo.png")
 
-header_col1, header_col2, header_col3 = st.columns([1.1, 4.6, 1.2])
+# ============================================================
+# HEADER WITH OPTIONAL LOGOS
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+CEA_LOGO = BASE_DIR / "cea_logo.png"
+RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
+
+header_col1, header_col2, header_col3 = st.columns([1.2, 4.8, 1.4])
 
 with header_col1:
     if CEA_LOGO.exists():
@@ -102,8 +120,8 @@ with header_col2:
             </div>
             <div class="main-description">
                 This dashboard supports a testbed for a distributed network of environmental monitoring instruments
-                deployed at <strong>CEA/LNHB</strong>, aimed at tracking parameters relevant to air quality and
-                radiological metrology environments, including <strong>radon</strong>, <strong>particulate matter
+                deployed in the <strong>CEA/LNHB</strong> building to track quantities relevant to indoor air quality
+                and controlled laboratory environments, including <strong>radon</strong>, <strong>particulate matter
                 (PM)</strong>, <strong>temperature</strong>, <strong>humidity</strong>, <strong>pressure</strong>,
                 battery status, and communication indicators.
             </div>
@@ -116,16 +134,12 @@ with header_col3:
     if RADONNET_LOGO.exists():
         st.image(str(RADONNET_LOGO), use_column_width=True)
 
-with header_col3:
-    if RADONNET_LOGO.exists():
-        st.image(str(RADONNET_LOGO), use_container_width=True)
-
 st.markdown(
     """
     <div class="section-note">
-        <strong>Testbed scope.</strong> This platform is designed to evaluate and visualize the behavior of a sensor
-        network operating in the CEA/LNHB building, with particular interest in environmental quantities that can
-        affect radon monitoring strategies, aerosol-related measurements, and indoor ambient characterization.
+        <strong>Testbed scope.</strong> This platform is intended to evaluate and visualize the behavior of a sensor
+        network operating in the CEA/LNHB building, with particular interest in environmental parameters relevant to
+        radon monitoring, aerosol-related measurements, and indoor ambient characterization.
     </div>
     """,
     unsafe_allow_html=True,
@@ -163,23 +177,23 @@ VARIABLE_UNITS = {
 # SUPABASE
 # ============================================================
 @st.cache_resource
-def get_supabase() -> Client:
+def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ============================================================
-# GENERIC HELPERS
+# HELPERS
 # ============================================================
-def get_unit(variable: str) -> str:
+def get_unit(variable):
     return VARIABLE_UNITS.get(str(variable), "")
 
 
-def with_unit(label: str, variable: str) -> str:
+def with_unit(label, variable):
     unit = get_unit(variable)
     return f"{label} [{unit}]" if unit else label
 
 
-def format_value(value, decimals: int = 2) -> str:
+def format_value(value, decimals=2):
     if pd.isna(value):
         return "NA"
 
@@ -202,13 +216,13 @@ def format_value(value, decimals: int = 2) -> str:
     return f"{value:.{decimals}f}"
 
 
-def format_value_with_unit(value, variable: str, decimals: int = 2) -> str:
+def format_value_with_unit(value, variable, decimals=2):
     base = format_value(value, decimals=decimals)
     unit = get_unit(variable)
     return f"{base} {unit}" if unit else base
 
 
-def choose_tick_format(series: pd.Series) -> str | None:
+def choose_tick_format(series):
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return None
@@ -227,7 +241,7 @@ def choose_tick_format(series: pd.Series) -> str | None:
     return None
 
 
-def choose_hover_format(series: pd.Series) -> str:
+def choose_hover_format(series):
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return ".2f"
@@ -246,7 +260,7 @@ def choose_hover_format(series: pd.Series) -> str:
     return ".2f"
 
 
-def safe_sensor_name(row: pd.Series) -> str:
+def safe_sensor_name(row):
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
     sensor_ref = row.get("sensor_ref")
@@ -258,7 +272,7 @@ def safe_sensor_name(row: pd.Series) -> str:
     return str(sensor_ref)
 
 
-def sensor_option_label(row: pd.Series) -> tuple[str, str]:
+def sensor_option_label(row):
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
     sensor_ref = row.get("sensor_ref")
@@ -277,8 +291,8 @@ def sensor_option_label(row: pd.Series) -> tuple[str, str]:
     return f"{name} ({sid})", str(sensor_ref)
 
 
-def fetch_all(query_builder, page_size: int = 1000) -> list[dict]:
-    rows: list[dict] = []
+def fetch_all(query_builder, page_size=1000):
+    rows = []
     start = 0
 
     while True:
@@ -302,11 +316,7 @@ def fetch_all(query_builder, page_size: int = 1000) -> list[dict]:
 # ============================================================
 # SAFE TABLE RENDERING
 # ============================================================
-def dataframe_for_html(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a display-safe dataframe rendered as HTML.
-    This avoids Streamlit Arrow serialization issues (LargeUtf8).
-    """
+def dataframe_for_html(df):
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -331,7 +341,7 @@ def dataframe_for_html(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def safe_table(df: pd.DataFrame, height: int | None = None) -> None:
+def safe_table(df, height=None):
     if df is None or df.empty:
         st.info("No rows to display.")
         return
@@ -364,7 +374,7 @@ def safe_table(df: pd.DataFrame, height: int | None = None) -> None:
 # DATA LOADING
 # ============================================================
 @st.cache_data(ttl=60)
-def load_bases() -> pd.DataFrame:
+def load_bases():
     sb = get_supabase()
 
     rows = fetch_all(
@@ -384,7 +394,7 @@ def load_bases() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def load_sensors() -> pd.DataFrame:
+def load_sensors():
     sb = get_supabase()
 
     rows = fetch_all(
@@ -423,7 +433,7 @@ def load_sensors() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def load_variables(sensor_refs: list[str]) -> pd.DataFrame:
+def load_variables(sensor_refs):
     sb = get_supabase()
 
     if not sensor_refs:
@@ -446,11 +456,12 @@ def load_variables(sensor_refs: list[str]) -> pd.DataFrame:
         .sort_values("variable")
         .reset_index(drop=True)
     )
+
     return out
 
 
 @st.cache_data(ttl=60)
-def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_utc: str) -> pd.DataFrame:
+def load_multi_timeseries(sensor_refs, variables, start_utc):
     sb = get_supabase()
 
     if not sensor_refs or not variables:
@@ -472,7 +483,6 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
     if df.empty:
         return pd.DataFrame()
 
-    # Strong typing
     for col in ["payload_time_utc", "inserted_at", "received_at_utc"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
@@ -486,11 +496,8 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
     if "value_num" in df.columns:
         df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
 
-    # Keep value_text as plain object; no pandas string dtype to avoid frontend issues
     if "value_text" in df.columns:
-        df["value_text"] = df["value_text"].map(
-            lambda x: None if pd.isna(x) else str(x)
-        )
+        df["value_text"] = df["value_text"].map(lambda x: None if pd.isna(x) else str(x))
 
     if "variable" in df.columns:
         df["variable"] = df["variable"].map(lambda x: None if pd.isna(x) else str(x))
@@ -498,13 +505,9 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
     if "sensor_ref" in df.columns:
         df["sensor_ref"] = df["sensor_ref"].map(lambda x: None if pd.isna(x) else str(x))
 
-    # Drop rows unusable for plotting/export
     df = df.dropna(subset=["payload_time_utc", "value_num", "variable", "sensor_ref"]).copy()
-
-    # Remove inf / -inf
     df = df[df["value_num"].map(lambda x: pd.notna(x) and math.isfinite(float(x)))].copy()
 
-    # Merge metadata
     sensors_df = load_sensors()
     if not sensors_df.empty:
         meta_cols = [
@@ -518,6 +521,7 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
             ]
             if c in sensors_df.columns
         ]
+
         sensors_meta = sensors_df[meta_cols].drop_duplicates(subset=["sensor_ref"])
 
         df = df.merge(
@@ -536,7 +540,6 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
                     df[col] = df[meta_col]
                 df = df.drop(columns=[meta_col])
 
-    # Fill missing unit from variable map
     if "unit" in df.columns:
         df["unit"] = df.apply(
             lambda row: row["unit"]
@@ -545,10 +548,7 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
             axis=1,
         )
 
-    # Human-readable label
     df["sensor_label"] = df.apply(safe_sensor_name, axis=1)
-
-    # Final hard casting
     df["value_num"] = df["value_num"].astype(float)
     df["sensor_label"] = df["sensor_label"].map(str)
 
@@ -561,7 +561,7 @@ def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_ut
 # ============================================================
 # PLOT PREP
 # ============================================================
-def prepare_plot_df(df: pd.DataFrame, variable: str) -> pd.DataFrame:
+def prepare_plot_df(df, variable):
     out = df[df["variable"] == variable].copy()
 
     if out.empty:
@@ -582,12 +582,7 @@ def prepare_plot_df(df: pd.DataFrame, variable: str) -> pd.DataFrame:
     return out
 
 
-def build_timeseries_figure(
-    plot_df: pd.DataFrame,
-    variable: str,
-    show_points: bool,
-    height: int,
-) -> go.Figure:
+def build_timeseries_figure(plot_df, variable, show_points, height):
     y_title = with_unit(variable.capitalize(), variable)
     value_label = with_unit(variable, variable)
     hover_num_format = choose_hover_format(plot_df["value_num"])
@@ -643,7 +638,7 @@ if "selected_variables" not in st.session_state:
 # ============================================================
 # SIDEBAR
 # ============================================================
-st.sidebar.header("Data Selection")
+st.sidebar.header("Testbed Data Selection")
 
 try:
     sensors_df = load_sensors()
@@ -655,7 +650,7 @@ if sensors_df.empty:
     st.error("No sensors found in Supabase. Is the collector running?")
     st.stop()
 
-sensor_options: dict[str, str] = {}
+sensor_options = {}
 for _, row in sensors_df.iterrows():
     label, sensor_ref = sensor_option_label(row)
     sensor_options[sensor_ref] = label
@@ -778,7 +773,7 @@ with st.expander("Debug / data sanity check"):
 # ============================================================
 # OVERVIEW
 # ============================================================
-st.subheader("Overview")
+st.subheader("Testbed Overview")
 
 overview_cols = st.columns(4)
 overview_cols[0].metric("Selected sensors", len(selected_refs))
@@ -798,7 +793,7 @@ else:
 # ============================================================
 # OVERLAY COMPARISON
 # ============================================================
-st.subheader("Overlay Comparison")
+st.subheader("Sensor Network Comparison")
 
 overlay_variable = st.selectbox(
     "Variable for sensor comparison",
@@ -857,7 +852,7 @@ else:
 # ============================================================
 # MULTI-VARIABLE SECTION
 # ============================================================
-st.subheader("Selected Variables")
+st.subheader("Environmental Parameters")
 
 for variable in selected_variables:
     var_df = prepare_plot_df(data_df, variable)
@@ -903,7 +898,7 @@ for variable in selected_variables:
 # ============================================================
 # LATEST VALUES TABLE
 # ============================================================
-st.subheader("Latest Values Table")
+st.subheader("Latest Sensor Readings")
 
 latest_rows = (
     data_df.sort_values(["sensor_ref", "variable", "payload_time_utc"])
@@ -920,7 +915,7 @@ else:
         .reset_index()
     )
 
-    renamed_columns: dict[str, str] = {}
+    renamed_columns = {}
     for col in latest_table.columns:
         if col == "sensor_label":
             renamed_columns[col] = "Sensor"
@@ -934,7 +929,7 @@ else:
 # ============================================================
 # RAW DATA + EXPORT
 # ============================================================
-st.subheader("Raw Data & Export")
+st.subheader("Raw Measurements & Export")
 
 with st.expander("View filtered raw data"):
     display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
@@ -967,7 +962,6 @@ with st.expander("View filtered raw data"):
 
     safe_table(display_df[display_columns], height=500)
 
-# Export the raw numeric dataframe, not the HTML-safe display dataframe
 csv_df = data_df.copy()
 
 for col in ["payload_time_utc", "inserted_at", "received_at_utc"]:
@@ -990,6 +984,3 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
-
-
-
