@@ -25,12 +25,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ssl import create_default_context
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt
+from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from dotenv import load_dotenv
 load_dotenv()
 
 
@@ -45,10 +45,11 @@ class Config:
     mqtt_user: str
     mqtt_password: str
     mqtt_topic: str
+    mqtt_keepalive: int
     log_level: str
-    keepalive: int
     supabase_url: str
     supabase_key: str
+    dedup_window_seconds: int
 
     @staticmethod
     def from_env() -> "Config":
@@ -58,10 +59,11 @@ class Config:
             mqtt_user=os.getenv("MQTT_USER", "YOUR_USERNAME"),
             mqtt_password=os.getenv("MQTT_PASSWORD", "YOUR_PASSWORD"),
             mqtt_topic=os.getenv("MQTT_TOPIC", "Aranet/#"),
+            mqtt_keepalive=int(os.getenv("MQTT_KEEPALIVE", "60")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            keepalive=int(os.getenv("MQTT_KEEPALIVE", "60")),
             supabase_url=os.getenv("SUPABASE_URL", ""),
             supabase_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+            dedup_window_seconds=int(os.getenv("DEDUP_WINDOW_SECONDS", "120")),
         )
 
 
@@ -80,31 +82,34 @@ def setup_logging(level: str) -> None:
 # TIME UTILITIES
 # ============================================================
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return utc_now().isoformat(timespec="seconds")
 
 
 def unix_to_utc_iso(value: Any) -> Optional[str]:
-    """
-    Convert a Unix timestamp to an ISO 8601 UTC string.
-    Returns None if conversion fails.
-    """
     try:
         ts = int(float(value))
         return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OSError, OverflowError):
         return None
 
 
 def safe_float(value: Any) -> Optional[float]:
-    """
-    Convert numeric-looking values to float.
-    Returns None if conversion fails.
-    """
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_json_for_hashing(payload: Dict[str, Any]) -> str:
+    """
+    Deterministic JSON string for duplicate detection.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 # ============================================================
@@ -112,9 +117,6 @@ def safe_float(value: Any) -> Optional[float]:
 # ============================================================
 
 def parse_topic(topic: str) -> Dict[str, Optional[str]]:
-    """
-    Parse only the real Aranet topic structure.
-    """
     parts = topic.split("/")
 
     if len(parts) == 3 and parts[0] == "Aranet" and parts[2] == "name":
@@ -193,6 +195,41 @@ VARIABLE_UNITS = {
 
 
 # ============================================================
+# DUPLICATE CACHE
+# ============================================================
+
+class RecentMessageCache:
+    """
+    In-memory cache to avoid inserting duplicate measurement payloads
+    received in a short time window.
+    """
+
+    def __init__(self, ttl_seconds: int = 120):
+        self.ttl_seconds = ttl_seconds
+        self._cache: Dict[Tuple[str, str], float] = {}
+        self._lock = threading.Lock()
+
+    def seen_recently(self, sensor_ref: str, payload_signature: str) -> bool:
+        now_ts = time.time()
+        key = (sensor_ref, payload_signature)
+
+        with self._lock:
+            # prune old entries
+            expired = [
+                k for k, ts in self._cache.items()
+                if now_ts - ts > self.ttl_seconds
+            ]
+            for k in expired:
+                self._cache.pop(k, None)
+
+            if key in self._cache:
+                return True
+
+            self._cache[key] = now_ts
+            return False
+
+
+# ============================================================
 # SUPABASE WRITER
 # ============================================================
 
@@ -208,11 +245,14 @@ class SupabaseWriter:
         self.client: Client = create_client(supabase_url, supabase_key)
 
     def upsert_base(self, base_id: str, base_name: Optional[str] = None) -> None:
-        row = {
+        row: Dict[str, Any] = {
             "base_id": base_id,
-            "base_name": base_name,
             "updated_at": utc_now_iso(),
         }
+
+        if base_name is not None:
+            row["base_name"] = base_name
+
         self.client.table("bases").upsert(row, on_conflict="base_id").execute()
 
     def upsert_sensor(
@@ -224,14 +264,20 @@ class SupabaseWriter:
     ) -> str:
         sensor_ref = f"{base_id}/{sensor_id}"
 
-        row = {
+        row: Dict[str, Any] = {
             "sensor_ref": sensor_ref,
             "base_id": base_id,
             "sensor_id": sensor_id,
-            "sensor_name": sensor_name,
-            "product_number": product_number,
             "updated_at": utc_now_iso(),
         }
+
+        # Important: only send these keys when we really have values,
+        # so we do NOT overwrite existing metadata with null.
+        if sensor_name is not None:
+            row["sensor_name"] = sensor_name
+
+        if product_number is not None:
+            row["product_number"] = product_number
 
         self.client.table("sensors").upsert(row, on_conflict="sensor_ref").execute()
         return sensor_ref
@@ -269,10 +315,10 @@ class SupabaseWriter:
                     "base_id": base_id,
                     "sensor_id": sensor_id,
                     "sensor_ref": sensor_ref,
-                    "variable": variable,
+                    "variable": str(variable),
                     "value_text": None if value is None else str(value),
                     "value_num": safe_float(value),
-                    "unit": VARIABLE_UNITS.get(variable),
+                    "unit": VARIABLE_UNITS.get(str(variable)),
                     "raw_json": payload,
                 }
             )
@@ -285,7 +331,7 @@ class SupabaseWriter:
 
 
 # ============================================================
-# MQTT CONNECTOR
+# MQTT COLLECTOR
 # ============================================================
 
 class AranetCollector:
@@ -297,6 +343,7 @@ class AranetCollector:
         self.config = config
         self.writer = writer
         self._stop_event = threading.Event()
+        self._dedup_cache = RecentMessageCache(ttl_seconds=config.dedup_window_seconds)
 
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.username_pw_set(config.mqtt_user, config.mqtt_password)
@@ -309,12 +356,13 @@ class AranetCollector:
 
     def start(self) -> None:
         logging.info("Starting collector")
-        logging.info("Topic: %s", self.config.mqtt_topic)
+        logging.info("MQTT host: %s:%s", self.config.mqtt_host, self.config.mqtt_port)
+        logging.info("MQTT topic: %s", self.config.mqtt_topic)
 
         self.client.connect(
             self.config.mqtt_host,
             self.config.mqtt_port,
-            keepalive=self.config.keepalive,
+            keepalive=self.config.mqtt_keepalive,
         )
         self.client.loop_start()
 
@@ -324,6 +372,7 @@ class AranetCollector:
         finally:
             self.client.loop_stop()
             self.client.disconnect()
+            logging.info("Collector stopped")
 
     def stop(self) -> None:
         logging.info("Stopping collector")
@@ -331,7 +380,7 @@ class AranetCollector:
 
     def on_connect(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code == 0:
-            logging.info("Connected to HiveMQ Cloud")
+            logging.info("Connected to MQTT broker")
             client.subscribe(self.config.mqtt_topic)
             logging.info("Subscribed to %s", self.config.mqtt_topic)
         else:
@@ -340,6 +389,8 @@ class AranetCollector:
     def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
         if reason_code != 0:
             logging.warning("Unexpected disconnection, automatic reconnect will be attempted")
+        else:
+            logging.info("Disconnected cleanly")
 
     def on_message(self, client, userdata, msg) -> None:
         topic = msg.topic
@@ -354,75 +405,116 @@ class AranetCollector:
             return
 
         if topic_type == "alarms":
+            logging.debug("Ignoring alarms topic: %s", topic)
             return
 
         try:
             if topic_type == "base_name":
-                base_id = info["base_id"]
-                assert base_id is not None
-
-                self.writer.upsert_base(base_id, base_name=raw_payload)
-                logging.info("Base name updated | base_id=%s | base_name=%s", base_id, raw_payload)
+                self._handle_base_name(info, raw_payload)
                 return
 
-            if topic_type in {"sensor_name", "product_number", "measurements"}:
-                base_id = info["base_id"]
-                sensor_id = info["sensor_id"]
-                sensor_ref = info["sensor_ref"]
+            if topic_type == "sensor_name":
+                self._handle_sensor_name(info, raw_payload)
+                return
 
-                assert base_id is not None
-                assert sensor_id is not None
-                assert sensor_ref is not None
+            if topic_type == "product_number":
+                self._handle_product_number(info, raw_payload)
+                return
 
-                if topic_type == "sensor_name":
-                    self.writer.upsert_sensor(
-                        base_id=base_id,
-                        sensor_id=sensor_id,
-                        sensor_name=raw_payload,
-                    )
-                    logging.info("Sensor name updated | sensor_ref=%s | sensor_name=%s", sensor_ref, raw_payload)
-                    return
-
-                if topic_type == "product_number":
-                    self.writer.upsert_sensor(
-                        base_id=base_id,
-                        sensor_id=sensor_id,
-                        product_number=raw_payload,
-                    )
-                    logging.info("Product number updated | sensor_ref=%s | product_number=%s", sensor_ref, raw_payload)
-                    return
-
-                if topic_type == "measurements":
-                    self.writer.upsert_sensor(
-                        base_id=base_id,
-                        sensor_id=sensor_id,
-                    )
-
-                    payload = json.loads(raw_payload)
-                    if not isinstance(payload, dict):
-                        logging.warning("Measurements payload is not a JSON object | topic=%s", topic)
-                        return
-
-                    n = self.writer.insert_measurements(
-                        received_at_utc=received_at_utc,
-                        base_id=base_id,
-                        sensor_id=sensor_id,
-                        sensor_ref=sensor_ref,
-                        payload=payload,
-                    )
-
-                    logging.info(
-                        "Measurements stored | sensor_ref=%s | variables=%d | payload_time=%s",
-                        sensor_ref,
-                        n,
-                        payload.get("time"),
-                    )
-                    return
+            if topic_type == "measurements":
+                self._handle_measurements(info, raw_payload, received_at_utc)
+                return
 
         except json.JSONDecodeError:
             logging.warning("Invalid JSON payload | topic=%s | payload=%s", topic, raw_payload)
         except Exception as exc:
             logging.exception("Error while processing topic %s: %s", topic, exc)
+
+    def _handle_base_name(self, info: Dict[str, Optional[str]], raw_payload: str) -> None:
+        base_id = info["base_id"]
+        assert base_id is not None
+
+        self.writer.upsert_base(base_id=base_id, base_name=raw_payload)
+        logging.info("Base name updated | base_id=%s | base_name=%s", base_id, raw_payload)
+
+    def _handle_sensor_name(self, info: Dict[str, Optional[str]], raw_payload: str) -> None:
+        base_id = info["base_id"]
+        sensor_id = info["sensor_id"]
+        sensor_ref = info["sensor_ref"]
+
+        assert base_id is not None
+        assert sensor_id is not None
+        assert sensor_ref is not None
+
+        self.writer.upsert_sensor(
+            base_id=base_id,
+            sensor_id=sensor_id,
+            sensor_name=raw_payload,
+        )
+        logging.info("Sensor name updated | sensor_ref=%s | sensor_name=%s", sensor_ref, raw_payload)
+
+    def _handle_product_number(self, info: Dict[str, Optional[str]], raw_payload: str) -> None:
+        base_id = info["base_id"]
+        sensor_id = info["sensor_id"]
+        sensor_ref = info["sensor_ref"]
+
+        assert base_id is not None
+        assert sensor_id is not None
+        assert sensor_ref is not None
+
+        self.writer.upsert_sensor(
+            base_id=base_id,
+            sensor_id=sensor_id,
+            product_number=raw_payload,
+        )
+        logging.info(
+            "Product number updated | sensor_ref=%s | product_number=%s",
+            sensor_ref,
+            raw_payload,
+        )
+
+    def _handle_measurements(
+        self,
+        info: Dict[str, Optional[str]],
+        raw_payload: str,
+        received_at_utc: str,
+    ) -> None:
+        base_id = info["base_id"]
+        sensor_id = info["sensor_id"]
+        sensor_ref = info["sensor_ref"]
+
+        assert base_id is not None
+        assert sensor_id is not None
+        assert sensor_ref is not None
+
+        # Ensure base/sensor exist, but do NOT overwrite metadata with nulls.
+        self.writer.upsert_base(base_id=base_id)
+        self.writer.upsert_sensor(base_id=base_id, sensor_id=sensor_id)
+
+        payload = json.loads(raw_payload)
+        if not isinstance(payload, dict):
+            logging.warning("Measurements payload is not a JSON object | sensor_ref=%s", sensor_ref)
+            return
+
+        payload_signature = normalize_json_for_hashing(payload)
+        if self._dedup_cache.seen_recently(sensor_ref, payload_signature):
+            logging.info("Duplicate measurements skipped | sensor_ref=%s", sensor_ref)
+            return
+
+        n = self.writer.insert_measurements(
+            received_at_utc=received_at_utc,
+            base_id=base_id,
+            sensor_id=sensor_id,
+            sensor_ref=sensor_ref,
+            payload=payload,
+        )
+
+        logging.info(
+            "Measurements stored | sensor_ref=%s | variables=%d | payload_time=%s",
+            sensor_ref,
+            n,
+            payload.get("time"),
+        )
 
 
 # ============================================================
