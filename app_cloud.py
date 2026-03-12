@@ -117,7 +117,7 @@ with header_logo_col:
 
     with logo_cols[1]:
         if RADONNET_LOGO.exists():
-            st.image(str(RADONNET_LOGO), width=110)
+            st.image(str(RADONNET_LOGO), width=200)
 
 with header_text_col:
     st.markdown(
@@ -989,4 +989,5 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
