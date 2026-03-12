@@ -760,7 +760,7 @@ else:
 
 start_utc = start_dt.isoformat()
 
-#show_plot_debug = st.sidebar.checkbox("Show plot debug", value=False)
+show_plot_debug = st.sidebar.checkbox("Show plot debug", value=False)
 
 show_points = st.sidebar.checkbox(
     "Show markers",
@@ -1028,6 +1028,7 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
 
