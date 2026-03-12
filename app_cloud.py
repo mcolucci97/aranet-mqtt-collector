@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from supabase import create_client
+from supabase import create_client, Client
 
 
 # ============================================================
@@ -32,7 +32,7 @@ except Exception as e:
 
 
 # ============================================================
-# UNITS CONFIGURATION
+# UNITS
 # ============================================================
 VARIABLE_UNITS = {
     "radon": "Bq/m³",
@@ -48,38 +48,11 @@ VARIABLE_UNITS = {
 
 
 # ============================================================
-# SUPABASE
+# SUPABASE CLIENT
 # ============================================================
 @st.cache_resource
-def get_supabase():
+def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-# ============================================================
-# SAFE TABLE DISPLAY
-# ============================================================
-def dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert a dataframe to plain string/object types that Streamlit Cloud
-    can render without Arrow LargeUtf8 issues.
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    out = df.copy().reset_index(drop=True)
-
-    for col in out.columns:
-        if pd.api.types.is_datetime64_any_dtype(out[col]):
-            out[col] = out[col].dt.strftime("%Y-%m-%d %H:%M:%S %Z").fillna("")
-        else:
-            out[col] = out[col].map(lambda x: "" if pd.isna(x) else str(x))
-
-    out.columns = [str(c) for c in out.columns]
-    return out
-
-
-def safe_table(df: pd.DataFrame):
-    st.table(dataframe_for_display(df))
 
 
 # ============================================================
@@ -98,7 +71,11 @@ def format_value(value, decimals: int = 2) -> str:
     if pd.isna(value):
         return "NA"
 
-    value = float(value)
+    try:
+        value = float(value)
+    except Exception:
+        return str(value)
+
     abs_val = abs(value)
 
     if abs_val == 0:
@@ -116,10 +93,7 @@ def format_value_with_unit(value, variable: str, decimals: int = 2) -> str:
     return f"{base} {unit}" if unit else base
 
 
-def choose_plot_number_format(series: pd.Series):
-    if series is None or len(series) == 0:
-        return None
-
+def choose_tick_format(series: pd.Series):
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return None
@@ -135,9 +109,6 @@ def choose_plot_number_format(series: pd.Series):
 
 
 def choose_hover_format(series: pd.Series) -> str:
-    if series is None or len(series) == 0:
-        return ".2f"
-
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return ".2f"
@@ -152,56 +123,38 @@ def choose_hover_format(series: pd.Series) -> str:
     return ".2f"
 
 
-def format_sensor_label(row):
-    sensor_name = row.get("sensor_name")
-    sensor_id = row.get("sensor_id")
-    sensor_ref = row.get("sensor_ref")
-
-    display_name = (
-        sensor_name if pd.notna(sensor_name) and str(sensor_name).strip()
-        else "Unknown sensor"
-    )
-    display_id = sensor_id if pd.notna(sensor_id) else "no-id"
-
-    return f"{display_name} ({display_id})", sensor_ref
-
-
-def safe_sensor_name(row):
+def safe_sensor_name(row: pd.Series) -> str:
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
     sensor_ref = row.get("sensor_ref")
 
     if pd.notna(sensor_name) and str(sensor_name).strip():
         return str(sensor_name)
-    if pd.notna(sensor_id):
+    if pd.notna(sensor_id) and str(sensor_id).strip():
         return str(sensor_id)
     return str(sensor_ref)
 
 
-def compute_metrics(df: pd.DataFrame):
-    latest_val = df["value_num"].iloc[-1]
-    prev_val = df["value_num"].iloc[-2] if len(df) > 1 else latest_val
-    delta = latest_val - prev_val
+def sensor_option_label(row: pd.Series) -> str:
+    sensor_name = row.get("sensor_name")
+    sensor_id = row.get("sensor_id")
+    sensor_ref = row.get("sensor_ref")
 
-    min_val = df["value_num"].min()
-    max_val = df["value_num"].max()
-    avg_val = df["value_num"].mean()
-    last_update = df["payload_time_utc"].iloc[-1]
-
-    return {
-        "latest": latest_val,
-        "previous": prev_val,
-        "delta": delta,
-        "min": min_val,
-        "max": max_val,
-        "avg": avg_val,
-        "last_update": last_update,
-        "count": len(df),
-    }
+    name = (
+        str(sensor_name).strip()
+        if pd.notna(sensor_name) and str(sensor_name).strip()
+        else "Unknown sensor"
+    )
+    sid = (
+        str(sensor_id).strip()
+        if pd.notna(sensor_id) and str(sensor_id).strip()
+        else "no-id"
+    )
+    return f"{name} ({sid})", sensor_ref
 
 
 def fetch_all(query_builder, page_size: int = 1000):
-    all_rows = []
+    rows = []
     start = 0
 
     while True:
@@ -212,21 +165,89 @@ def fetch_all(query_builder, page_size: int = 1000):
         if not batch:
             break
 
-        all_rows.extend(batch)
+        rows.extend(batch)
 
         if len(batch) < page_size:
             break
 
         start += page_size
 
-    return all_rows
+    return rows
+
+
+# ============================================================
+# SAFE TABLE RENDERING (NO ARROW / NO LargeUtf8)
+# ============================================================
+def dataframe_for_html(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert dataframe to a display-safe copy for HTML rendering.
+    This avoids Streamlit Arrow serialization issues like LargeUtf8.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy().reset_index(drop=True)
+
+    for col in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[col]):
+            # Render datetimes as strings
+            try:
+                if getattr(out[col].dt, "tz", None) is not None:
+                    out[col] = out[col].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+                else:
+                    out[col] = out[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                out[col] = out[col].astype(str)
+        elif pd.api.types.is_float_dtype(out[col]):
+            out[col] = out[col].map(lambda x: "" if pd.isna(x) else format_value(x))
+        elif pd.api.types.is_integer_dtype(out[col]):
+            out[col] = out[col].map(lambda x: "" if pd.isna(x) else str(x))
+        else:
+            out[col] = out[col].map(lambda x: "" if pd.isna(x) else str(x))
+
+    out.columns = [str(c) for c in out.columns]
+    return out
+
+
+def safe_table(df: pd.DataFrame, height: int | None = None):
+    """
+    Render table as HTML instead of Streamlit dataframe/table,
+    so Arrow is not involved and LargeUtf8 errors disappear.
+    """
+    if df is None or df.empty:
+        st.info("No rows to display.")
+        return
+
+    show_df = dataframe_for_html(df)
+
+    html = show_df.to_html(index=False, escape=True)
+    wrapper_style = ""
+    if height is not None:
+        wrapper_style = (
+            f"max-height:{height}px; overflow-y:auto; overflow-x:auto; "
+            f"border:1px solid #ddd; border-radius:8px; padding:4px;"
+        )
+    else:
+        wrapper_style = (
+            "overflow-x:auto; border:1px solid #ddd; "
+            "border-radius:8px; padding:4px;"
+        )
+
+    st.markdown(
+        f"""
+        <div style="{wrapper_style}">
+            {html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
 # DATA LOADING
 # ============================================================
 @st.cache_data(ttl=60)
-def load_bases():
+def load_bases() -> pd.DataFrame:
     sb = get_supabase()
 
     rows = fetch_all(
@@ -239,11 +260,14 @@ def load_bases():
     if df.empty:
         return pd.DataFrame(columns=["base_id", "base_name", "updated_at"])
 
+    if "updated_at" in df.columns:
+        df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce", utc=True)
+
     return df
 
 
 @st.cache_data(ttl=60)
-def load_sensors():
+def load_sensors() -> pd.DataFrame:
     sb = get_supabase()
 
     rows = fetch_all(
@@ -263,11 +287,15 @@ def load_sensors():
                 "sensor_name",
                 "product_number",
                 "updated_at",
+                "base_name",
             ]
         )
 
+    if "updated_at" in df.columns:
+        df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce", utc=True)
+
     bases_df = load_bases()
-    if not bases_df.empty:
+    if not bases_df.empty and "base_id" in df.columns:
         df = df.merge(
             bases_df[["base_id", "base_name"]],
             on="base_id",
@@ -278,7 +306,7 @@ def load_sensors():
 
 
 @st.cache_data(ttl=60)
-def load_variables(sensor_refs):
+def load_variables(sensor_refs: list[str]) -> pd.DataFrame:
     sb = get_supabase()
 
     if not sensor_refs:
@@ -295,17 +323,18 @@ def load_variables(sensor_refs):
         return pd.DataFrame(columns=["variable", "n"])
 
     out = (
-        df.groupby("variable")
+        df.groupby("variable", dropna=True)
         .size()
         .reset_index(name="n")
         .sort_values("variable")
         .reset_index(drop=True)
     )
+
     return out
 
 
 @st.cache_data(ttl=60)
-def load_multi_timeseries(sensor_refs, variables, start_utc):
+def load_multi_timeseries(sensor_refs: list[str], variables: list[str], start_utc: str) -> pd.DataFrame:
     sb = get_supabase()
 
     if not sensor_refs or not variables:
@@ -314,8 +343,9 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
     rows = fetch_all(
         sb.table("measurements")
         .select(
-            "received_at_utc, payload_time_unix, payload_time_utc, "
-            "base_id, sensor_id, sensor_ref, variable, value_text, value_num, unit"
+            "id, payload_time_utc, inserted_at, received_at_utc, payload_time_unix, "
+            "base_id, base_name, sensor_id, sensor_name, sensor_ref, "
+            "variable, value_num, value_text, unit"
         )
         .gte("payload_time_utc", start_utc)
         .in_("sensor_ref", sensor_refs)
@@ -327,31 +357,39 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
     if df.empty:
         return pd.DataFrame()
 
-    df = df.copy()
+    # Strong typing
+    for col in ["payload_time_utc", "inserted_at", "received_at_utc"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
 
-    df["payload_time_utc"] = pd.to_datetime(df["payload_time_utc"], errors="coerce", utc=True)
-    df["received_at_utc"] = pd.to_datetime(df["received_at_utc"], errors="coerce", utc=True)
-    df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
-    df["value_text"] = df["value_text"].astype(str)
+    if "payload_time_unix" in df.columns:
+        df["payload_time_unix"] = pd.to_numeric(df["payload_time_unix"], errors="coerce")
 
-    df = df.dropna(subset=["payload_time_utc", "value_num"])
-    df = df.sort_values("payload_time_utc").reset_index(drop=True)
+    if "value_num" in df.columns:
+        df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
 
+    if "value_text" in df.columns:
+        df["value_text"] = df["value_text"].astype("string")
+
+    # Drop only rows where time or numeric value are unusable for plotting
+    df = df.dropna(subset=["payload_time_utc", "value_num"]).copy()
+
+    # Add metadata from sensors table if available / missing
     sensors_df = load_sensors()
     if not sensors_df.empty:
-        sensors_meta = sensors_df[
-            [
-                c for c in [
-                    "sensor_ref",
-                    "base_id",
-                    "base_name",
-                    "sensor_id",
-                    "sensor_name",
-                    "product_number",
-                ]
-                if c in sensors_df.columns
+        meta_cols = [
+            c for c in [
+                "sensor_ref",
+                "base_id",
+                "base_name",
+                "sensor_id",
+                "sensor_name",
+                "product_number",
             ]
-        ].drop_duplicates()
+            if c in sensors_df.columns
+        ]
+
+        sensors_meta = sensors_df[meta_cols].drop_duplicates(subset=["sensor_ref"])
 
         df = df.merge(
             sensors_meta,
@@ -360,14 +398,29 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
             suffixes=("", "_meta"),
         )
 
-        for col in ["base_id", "sensor_id", "sensor_name", "base_name", "product_number"]:
+        for col in ["base_id", "base_name", "sensor_id", "sensor_name", "product_number"]:
             meta_col = f"{col}_meta"
             if meta_col in df.columns:
                 if col in df.columns:
-                    df[col] = df[meta_col].combine_first(df[col])
+                    df[col] = df[col].combine_first(df[meta_col])
                 else:
                     df[col] = df[meta_col]
                 df = df.drop(columns=[meta_col])
+
+    # Fallback unit from variable map if missing
+    if "unit" in df.columns:
+        df["unit"] = df.apply(
+            lambda row: row["unit"] if pd.notna(row["unit"]) and str(row["unit"]).strip()
+            else get_unit(str(row["variable"])),
+            axis=1,
+        )
+
+    # Human label
+    df["sensor_label"] = df.apply(safe_sensor_name, axis=1)
+
+    # Final sorting: crucial so plots use real values in the right order
+    sort_cols = [c for c in ["sensor_ref", "variable", "payload_time_utc", "id"] if c in df.columns]
+    df = df.sort_values(sort_cols).reset_index(drop=True)
 
     return df
 
@@ -383,7 +436,7 @@ if "selected_variables" not in st.session_state:
 
 
 # ============================================================
-# SIDEBAR
+# LOAD SIDEBAR DATA
 # ============================================================
 st.sidebar.header("Data Selection")
 
@@ -394,21 +447,21 @@ except Exception as e:
     st.stop()
 
 if sensors_df.empty:
-    st.error("No sensors found in Supabase. Is the connector running?")
+    st.error("No sensors found in Supabase. Is the collector running?")
     st.stop()
 
 sensor_options = {}
 for _, row in sensors_df.iterrows():
-    label, sensor_ref = format_sensor_label(row)
+    label, sensor_ref = sensor_option_label(row)
     sensor_options[sensor_ref] = label
 
 all_sensor_refs = list(sensor_options.keys())
 
-col1, col2 = st.sidebar.columns(2)
-if col1.button("Select all detectors"):
+col_a, col_b = st.sidebar.columns(2)
+if col_a.button("Select all detectors"):
     st.session_state.selected_refs = all_sensor_refs
 
-if col2.button("Clear detectors"):
+if col_b.button("Clear detectors"):
     st.session_state.selected_refs = []
 
 if not st.session_state.selected_refs and all_sensor_refs:
@@ -436,13 +489,13 @@ if vars_df.empty or "variable" not in vars_df.columns:
     st.warning("No measurements available for the selected sensors.")
     st.stop()
 
-all_variables = vars_df["variable"].dropna().unique().tolist()
+all_variables = vars_df["variable"].dropna().astype(str).unique().tolist()
 
-col3, col4 = st.sidebar.columns(2)
-if col3.button("Select all variables"):
+col_c, col_d = st.sidebar.columns(2)
+if col_c.button("Select all variables"):
     st.session_state.selected_variables = all_variables
 
-if col4.button("Clear variables"):
+if col_d.button("Clear variables"):
     st.session_state.selected_variables = []
 
 if not st.session_state.selected_variables and all_variables:
@@ -478,7 +531,7 @@ auto_refresh = st.sidebar.checkbox("Auto-refresh every minute", value=False)
 
 
 # ============================================================
-# FETCH DATA
+# FETCH MAIN DATA
 # ============================================================
 try:
     data_df = load_multi_timeseries(
@@ -494,8 +547,6 @@ if data_df.empty:
     st.warning("No data found for the selected filters.")
     st.stop()
 
-data_df["sensor_label"] = data_df.apply(safe_sensor_name, axis=1)
-
 
 # ============================================================
 # DEBUG / SANITY CHECK
@@ -505,7 +556,7 @@ with st.expander("Debug / data sanity check"):
     st.write(list(data_df.columns))
 
     st.write("First rows:")
-    safe_table(data_df.head(10))
+    safe_table(data_df.head(10), height=300)
 
     if "value_num" in data_df.columns:
         st.write("value_num summary:")
@@ -513,7 +564,11 @@ with st.expander("Debug / data sanity check"):
 
     if {"variable", "value_num", "value_text"}.issubset(data_df.columns):
         st.write("Sample variable/value pairs:")
-        safe_table(data_df[["variable", "value_num", "value_text"]].head(20))
+        safe_table(
+            data_df[["payload_time_utc", "sensor_label", "variable", "value_num", "value_text"]]
+            .head(20),
+            height=300,
+        )
 
 
 # ============================================================
@@ -548,13 +603,19 @@ overlay_variable = st.selectbox(
 )
 
 overlay_df = data_df[data_df["variable"] == overlay_variable].copy()
-overlay_unit = get_unit(overlay_variable)
+
+# Very explicit: plot the measured numeric value, not row count/index
+overlay_df = overlay_df.dropna(subset=["payload_time_utc", "value_num"]).copy()
+overlay_df["value_num"] = pd.to_numeric(overlay_df["value_num"], errors="coerce")
+overlay_df = overlay_df.dropna(subset=["value_num"]).sort_values(
+    ["sensor_ref", "payload_time_utc"]
+)
 
 if overlay_df.empty:
     st.info("No data available for the selected overlay variable.")
 else:
     hover_num_format = choose_hover_format(overlay_df["value_num"])
-    tick_format = choose_plot_number_format(overlay_df["value_num"])
+    tick_format = choose_tick_format(overlay_df["value_num"])
     y_title = with_unit(overlay_variable.capitalize(), overlay_variable)
 
     fig_overlay = px.line(
@@ -570,7 +631,7 @@ else:
         template="plotly_white",
     )
 
-    value_label = f"{overlay_variable} [{overlay_unit}]" if overlay_unit else overlay_variable
+    value_label = with_unit(overlay_variable, overlay_variable)
 
     fig_overlay.update_traces(
         mode="lines+markers" if show_points else "lines",
@@ -581,7 +642,7 @@ else:
         ),
     )
 
-    layout_kwargs = dict(
+    fig_overlay.update_layout(
         height=550,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_title="Timestamp (UTC)",
@@ -591,9 +652,8 @@ else:
     )
 
     if tick_format:
-        layout_kwargs["yaxis"] = dict(tickformat=tick_format)
+        fig_overlay.update_yaxes(tickformat=tick_format)
 
-    fig_overlay.update_layout(**layout_kwargs)
     st.plotly_chart(fig_overlay, use_container_width=True)
 
 
@@ -603,18 +663,19 @@ else:
 st.subheader(f"Current Snapshot for '{overlay_variable}'")
 
 snapshot_df = (
-    overlay_df.sort_values("payload_time_utc")
+    overlay_df.sort_values(["sensor_ref", "payload_time_utc"])
     .groupby("sensor_ref", as_index=False)
     .tail(1)
 )
 
-if not snapshot_df.empty:
+if snapshot_df.empty:
+    st.info("No latest snapshot available.")
+else:
     ncols = min(4, len(snapshot_df))
     metric_cols = st.columns(ncols)
 
     for idx, (_, row) in enumerate(snapshot_df.iterrows()):
-        col = metric_cols[idx % ncols]
-        col.metric(
+        metric_cols[idx % ncols].metric(
             row["sensor_label"],
             format_value_with_unit(row["value_num"], overlay_variable),
         )
@@ -627,18 +688,24 @@ st.subheader("Selected Variables")
 
 for variable in selected_variables:
     var_df = data_df[data_df["variable"] == variable].copy()
+
+    var_df = var_df.dropna(subset=["payload_time_utc", "value_num"]).copy()
+    var_df["value_num"] = pd.to_numeric(var_df["value_num"], errors="coerce")
+    var_df = var_df.dropna(subset=["value_num"]).sort_values(
+        ["sensor_ref", "payload_time_utc"]
+    )
+
     if var_df.empty:
         continue
 
-    unit = get_unit(variable)
     y_title = with_unit(variable.capitalize(), variable)
     hover_num_format = choose_hover_format(var_df["value_num"])
-    tick_format = choose_plot_number_format(var_df["value_num"])
+    tick_format = choose_tick_format(var_df["value_num"])
 
     st.markdown(f"### {y_title}")
 
     latest_var_df = (
-        var_df.sort_values("payload_time_utc")
+        var_df.sort_values(["sensor_ref", "payload_time_utc"])
         .groupby("sensor_ref", as_index=False)
         .tail(1)
     )
@@ -654,7 +721,7 @@ for variable in selected_variables:
     metrics_cols[3].metric("Maximum", format_value_with_unit(max_val, variable))
     metrics_cols[4].metric("Points", len(var_df))
 
-    value_label = f"{variable} [{unit}]" if unit else variable
+    value_label = with_unit(variable, variable)
 
     fig_var = px.line(
         var_df,
@@ -678,7 +745,7 @@ for variable in selected_variables:
         ),
     )
 
-    layout_kwargs = dict(
+    fig_var.update_layout(
         height=420,
         margin=dict(l=20, r=20, t=30, b=20),
         xaxis_title="Timestamp (UTC)",
@@ -688,9 +755,8 @@ for variable in selected_variables:
     )
 
     if tick_format:
-        layout_kwargs["yaxis"] = dict(tickformat=tick_format)
+        fig_var.update_yaxes(tickformat=tick_format)
 
-    fig_var.update_layout(**layout_kwargs)
     st.plotly_chart(fig_var, use_container_width=True)
 
 
@@ -699,23 +765,30 @@ for variable in selected_variables:
 # ============================================================
 st.subheader("Latest Values Table")
 
-latest_table = (
-    data_df.sort_values("payload_time_utc")
+latest_rows = (
+    data_df.sort_values(["sensor_ref", "variable", "payload_time_utc"])
     .groupby(["sensor_label", "variable"], as_index=False)
     .tail(1)
-    .pivot(index="sensor_label", columns="variable", values="value_num")
-    .reset_index()
+    .copy()
 )
 
-renamed_columns = {}
-for col in latest_table.columns:
-    if col == "sensor_label":
-        renamed_columns[col] = "Sensor"
-    else:
-        renamed_columns[col] = with_unit(str(col), str(col))
+if latest_rows.empty:
+    st.info("No latest values available.")
+else:
+    latest_table = (
+        latest_rows.pivot(index="sensor_label", columns="variable", values="value_num")
+        .reset_index()
+    )
 
-latest_table = latest_table.rename(columns=renamed_columns)
-safe_table(latest_table)
+    renamed_columns = {}
+    for col in latest_table.columns:
+        if col == "sensor_label":
+            renamed_columns[col] = "Sensor"
+        else:
+            renamed_columns[col] = with_unit(str(col), str(col))
+
+    latest_table = latest_table.rename(columns=renamed_columns)
+    safe_table(latest_table, height=500)
 
 
 # ============================================================
@@ -732,29 +805,43 @@ with st.expander("View filtered raw data"):
 
     display_columns = [
         col for col in [
+            "id",
             "payload_time_utc",
+            "inserted_at",
+            "received_at_utc",
+            "payload_time_unix",
             "sensor_label",
             "sensor_ref",
             "variable",
             "value_num",
             "value_text",
             "unit",
-            "display_value",
             "base_id",
             "base_name",
             "sensor_id",
             "sensor_name",
+            "product_number",
+            "display_value",
         ] if col in display_df.columns
     ]
 
-    safe_table(display_df[display_columns])
+    safe_table(display_df[display_columns], height=500)
 
+# IMPORTANT:
+# Export from raw data_df, not from sanitized HTML dataframe,
+# so value_num stays numeric and correct in CSV.
 csv_df = data_df.copy()
-csv = csv_df.to_csv(index=False).encode("utf-8")
+
+# Optional: ensure timestamps are serialized clearly
+for col in ["payload_time_utc", "inserted_at", "received_at_utc"]:
+    if col in csv_df.columns:
+        csv_df[col] = csv_df[col].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+
+csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
 
 st.download_button(
     label="📥 Download filtered CSV",
-    data=csv,
+    data=csv_bytes,
     file_name=f"aranet_dashboard_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
     mime="text/csv",
 )
