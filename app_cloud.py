@@ -30,17 +30,53 @@ st.set_page_config(
     layout="wide",
 )
 
+# ============================================================
+# HEADER WITH RESPONSIVE LOGOS
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+CEA_LOGO = BASE_DIR / "cea_logo.png"
+RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
 
-# ============================================================
-# CUSTOM STYLE
-# ============================================================
+
+def image_to_base64(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return base64.b64encode(path.read_bytes()).decode("utf-8")
+
+
+cea_logo_b64 = image_to_base64(CEA_LOGO)
+radonnet_logo_b64 = image_to_base64(RADONNET_LOGO)
+
 st.markdown(
     """
     <style>
-        .main-header {
+        .hero-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem 1.5rem;
             padding: 0.25rem 0 1rem 0;
             border-bottom: 1px solid rgba(120,120,120,0.25);
             margin-bottom: 1rem;
+        }
+
+        .hero-logos {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex: 0 0 auto;
+        }
+
+        .hero-logo {
+            height: 56px;
+            width: auto;
+            object-fit: contain;
+            display: block;
+        }
+
+        .hero-text {
+            flex: 1 1 420px;
+            min-width: 280px;
         }
 
         .main-title {
@@ -71,58 +107,42 @@ st.markdown(
             margin-bottom: 1rem;
         }
 
-        .section-note strong {
-            font-weight: 700;
-        }
+        @media (max-width: 900px) {
+            .hero-header {
+                align-items: flex-start;
+            }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.92rem;
-        }
+            .hero-text {
+                flex-basis: 100%;
+                min-width: 0;
+            }
 
-        th, td {
-            padding: 0.35rem 0.5rem;
-            border: 1px solid #ddd;
-            text-align: left;
-            white-space: nowrap;
-        }
+            .main-title {
+                font-size: 1.6rem;
+            }
 
-        th {
-            background-color: #f5f5f5;
+            .hero-logo {
+                height: 48px;
+            }
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+logos_html = ""
+if cea_logo_b64:
+    logos_html += f'<img class="hero-logo" src="data:image/png;base64,{cea_logo_b64}" alt="CEA logo">'
+if radonnet_logo_b64:
+    logos_html += f'<img class="hero-logo" src="data:image/png;base64,{radonnet_logo_b64}" alt="RadonNET logo">'
 
-# ============================================================
-# HEADER WITH OPTIONAL LOGOS
-# ============================================================
-BASE_DIR = Path(__file__).resolve().parent
-CEA_LOGO = BASE_DIR / "cea_logo.png"
-RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
-
-
-header_logo_col, header_text_col = st.columns([1.4, 5.4])
-
-with header_logo_col:
-
-    logo_cols = st.columns(2)
-
-    with logo_cols[0]:
-        if CEA_LOGO.exists():
-            st.image(str(CEA_LOGO), width=110)
-
-    with logo_cols[1]:
-        if RADONNET_LOGO.exists():
-            st.image(str(RADONNET_LOGO), width=200)
-
-with header_text_col:
-    st.markdown(
-        """
-        <div class="main-header">
+st.markdown(
+    f"""
+    <div class="hero-header">
+        <div class="hero-logos">
+            {logos_html}
+        </div>
+        <div class="hero-text">
             <div class="main-title">CEA/LNHB RadonNET Environmental Monitoring Testbed</div>
             <div class="main-subtitle">
                 Real-time and historical monitoring of indoor environmental parameters in the CEA/LNHB building
@@ -135,9 +155,10 @@ with header_text_col:
                 battery status, and communication indicators.
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.markdown(
     """
@@ -989,6 +1010,7 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
 
