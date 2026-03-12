@@ -105,7 +105,7 @@ CEA_LOGO = BASE_DIR / "cea_logo.png"
 RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
 
 
-header_logo_col, header_text_col = st.columns([1.6, 5.4])
+header_logo_col, header_text_col = st.columns([1.4, 5.4])
 
 with header_logo_col:
 
@@ -989,6 +989,7 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
 
