@@ -1,291 +1,334 @@
-# Aranet MQTT Collector
+# Aranet Environmental Monitoring Platform
 
-A robust Python tool to collect environmental data from **Aranet sensors via MQTT**, store them in a **SQLite database**, and provide tools for **data export and visualization**.
+### CEA / LNHB -- RadonNET Testbed
 
-The collector subscribes to MQTT topics published by an **Aranet base station** and automatically records all measurements in a structured database.
+A Python-based platform to collect, store, and visualize environmental
+data from *Aranet wireless sensors*.
 
-The design is **future-proof**: new detector types or new measurement variables require **no modification to the code**.
+The system ingests measurements via *MQTT*, stores them in a *Supabase
+PostgreSQL database*, and provides an interactive *Streamlit dashboard*
+for real-time monitoring and historical analysis.
 
----
+The platform is currently deployed as a *testbed in the CEA/LNHB
+building* within the framework of the *RadonNET project*, supporting the
+development of distributed environmental monitoring networks.
 
-# Features
+Monitored quantities include:
 
-* MQTT ingestion from Aranet base stations
-* Automatic sensor discovery
-* SQLite database storage
-* Long-format time series storage
-* CSV export (long and wide formats)
-* Built-in plotting utilities
-* Robust handling of unknown future variables
-* Metadata management (base station and sensors)
+-   Radon concentration
+-   Temperature
+-   Humidity
+-   Atmospheric pressure
+-   Particulate matter (PM1, PM2.5, PM10)
+-   Battery level
+-   Signal strength (RSSI)
 
----
+------------------------------------------------------------------------
 
-# Supported MQTT Topics
+# System Architecture
 
-The collector supports the following topic structure:
+    Aranet Sensors
+          │
+          ▼
+    Aranet Base Station
+          │
+          ▼
+    MQTT Broker (HiveMQ Cloud)
+          │
+          ▼
+    MQTT Collector (Python)
+          │
+          ▼
+    Supabase PostgreSQL Database
+          │
+          ▼
+    Streamlit Dashboard
 
-```
-Aranet/<base_id>/name
-Aranet/<base_id>/sensors/<sensor_id>/name
-Aranet/<base_id>/sensors/<sensor_id>/productNumber
-Aranet/<base_id>/sensors/<sensor_id>/json/measurements
-```
+The system supports *real-time acquisition*, *historical data
+exploration*, and *data export*.
 
-Example measurement payload:
+------------------------------------------------------------------------
 
-```json
-{
-  "radon": "16",
-  "atmosphericpressure": "300",
-  "battery": "0.91",
-  "temperature": "22.1",
-  "humidity": "43.2",
-  "rssi": "-99",
-  "time": "1773219886"
-}
-```
+# Repository Structure
 
-All variables except `time` are automatically recorded.
+    .
+    ├── app_cloud.py
+    ├── aranet_collector.py
+    ├── cloud_aranet_collector.py
+    ├── cea_logo.png
+    ├── radonnet_logo.png
+    ├── requirements.txt
+    ├── README.md
+    ├── LICENSE
+    └── .gitignore
 
-Alarm messages are ignored:
+## Main Components
 
-```
-Aranet/<base_id>/sensors/<sensor_id>/json/alarms
-```
+  -------------------------------------------------------------------------------
+  File                        Description
+  --------------------------- ---------------------------------------------------
+  app_cloud.py                Streamlit dashboard connected to Supabase
 
----
+  aranet_collector.py         MQTT collector designed for *local execution*
 
-# Architecture
+  cloud_aranet_collector.py   MQTT collector designed for *cloud deployment*
 
-```
-Aranet Sensors
-      │
-      ▼
-Aranet Base Station
-      │
-      ▼
-MQTT Broker (HiveMQ Cloud)
-      │
-      ▼
-Aranet Collector
-      │
-      ▼
-SQLite Database
-      │
-      ├── CSV Export
-      └── Plotting
-```
+  requirements.txt            Python dependencies
 
----
+  cea_logo.png                CEA logo used in dashboard
 
-# Installation
+  radonnet_logo.png           RadonNET project logo
+  -------------------------------------------------------------------------------
 
-## Requirements
+------------------------------------------------------------------------
 
-* Python 3.10+
-* pip
+# Dashboard
 
-Install dependencies:
+The *Streamlit dashboard* provides:
 
-```
-pip install -r requirements.txt
-```
+-   real-time sensor visualization
+-   comparison between multiple sensors
+-   historical time-series plots
+-   CSV export of filtered data
+-   automatic unit handling
+-   responsive layout
 
----
+The dashboard is designed for *environmental monitoring in laboratory
+environments* and is used as part of the *RadonNET testbed
+infrastructure at CEA/LNHB*.
 
-# Configuration
+## Run the dashboard locally
 
-The collector uses **environment variables** for configuration.
+    streamlit run app_cloud.py
+
+The dashboard reads data directly from *Supabase*.
+
+Required credentials must be stored in:
+
+    .streamlit/secrets.toml
 
 Example configuration:
 
-## Linux / macOS
+    SUPABASE_URL = "https://your-project.supabase.co"
+    SUPABASE_KEY = "your-anon-key"
 
-```
-export MQTT_HOST="your_cluster.s1.eu.hivemq.cloud"
-export MQTT_PORT="8883"
-export MQTT_USER="username"
-export MQTT_PASSWORD="password"
-export MQTT_TOPIC="Aranet/#"
-export ARANET_DB="$HOME/aranet_data.sqlite"
-```
+------------------------------------------------------------------------
 
-## Windows PowerShell
+# MQTT Data Collector
 
-```
-$env:MQTT_HOST="your_cluster.s1.eu.hivemq.cloud"
-$env:MQTT_PORT="8883"
-$env:MQTT_USER="username"
-$env:MQTT_PASSWORD="password"
-$env:MQTT_TOPIC="Aranet/#"
-$env:ARANET_DB="C:\data\aranet_data.sqlite"
-```
+The repository contains *two collector implementations*.
 
----
+Both subscribe to Aranet MQTT topics and store measurements in the
+database.
 
-# Running the Collector
+------------------------------------------------------------------------
 
-Start the collector:
+# Local Collector
 
-```
-python aranet_collector.py run
-```
+File:
 
-The program will:
+    aranet_collector.py
 
-* connect to the MQTT broker
-* subscribe to `Aranet/#`
-* store incoming data in the SQLite database
+This version is intended for *local laboratory deployment*.
 
-Example output:
+Features:
 
-```
-Connected to HiveMQ Cloud
-Subscribed to Aranet/#
-Measurements stored | sensor_ref=352406009362/40D246 | variables=6
-```
+-   MQTT ingestion
+-   automatic sensor discovery
+-   metadata management
+-   structured measurement storage
+-   CSV export
+-   plotting utilities
 
----
+This version can operate with a *local SQLite database*.
 
-# Listing Sensors
+## Start the collector
 
-```
-python aranet_collector.py list-sensors
-```
+    python aranet_collector.py run
 
-Example output:
+------------------------------------------------------------------------
 
-```
-sensor_ref           base_id      sensor_id
-352406009362/40D246 352406009362 40D246
-```
+# Cloud Collector
 
----
+File:
 
-# Listing Available Variables
+    cloud_aranet_collector.py
 
-```
-python aranet_collector.py list-variables
-```
+This version is designed for *cloud infrastructure*.
 
-For a specific sensor:
+It stores all measurements in *Supabase PostgreSQL*.
 
-```
-python aranet_collector.py list-variables --sensor-ref "352406009362/40D246"
-```
+Typical deployment environments:
 
----
+-   cloud servers
+-   Docker containers
+-   background workers
+-   hosted Python services
 
-# Exporting Data
+------------------------------------------------------------------------
 
-## Long format
+# Supported MQTT Topics
 
-```
-python aranet_collector.py export-long --output measurements_long.csv
-```
+The collectors support the following topic structure.
 
-Example:
+    Aranet/<base_id>/name
+    Aranet/<base_id>/sensors/<sensor_id>/name
+    Aranet/<base_id>/sensors/<sensor_id>/productNumber
+    Aranet/<base_id>/sensors/<sensor_id>/json/measurements
 
-| time       | sensor              | variable    | value |
-| ---------- | ------------------- | ----------- | ----- |
-| 2026-03-11 | 352406009362/40D246 | radon       | 16    |
-| 2026-03-11 | 352406009362/40D246 | temperature | 22.1  |
+Example measurement payload:
 
----
+    {
+      "radon": "16",
+      "atmosphericpressure": "300",
+      "battery": "0.91",
+      "temperature": "22.1",
+      "humidity": "43.2",
+      "rssi": "-99",
+      "time": "1773219886"
+    }
 
-## Wide format
+All variables except *time* are automatically recorded.
 
-```
-python aranet_collector.py export-wide --output measurements_wide.csv
-```
+Alarm messages are ignored:
 
-Example:
+    Aranet/<base_id>/sensors/<sensor_id>/json/alarms
 
-| time       | sensor              | radon | temperature | humidity |
-| ---------- | ------------------- | ----- | ----------- | -------- |
-| 2026-03-11 | 352406009362/40D246 | 16    | 22.1        | 43       |
+------------------------------------------------------------------------
 
----
+# Database Structure
 
-# Plotting Data
+Measurements are stored in *Supabase PostgreSQL*.
 
-Generate a plot for a variable:
+## bases
 
-```
-python aranet_collector.py plot --sensor-ref "352406009362/40D246" --variable "radon"
-```
+Stores base station metadata.
 
-Save the plot to a file:
+    base_id
+    base_name
+    updated_at
 
-```
-python aranet_collector.py plot --sensor-ref "352406009362/40D246" --variable "radon" --output radon.png
-```
+## sensors
 
----
+Stores sensor metadata.
 
-# Database
+    sensor_ref
+    base_id
+    sensor_id
+    sensor_name
+    product_number
+    updated_at
 
-All data are stored in a SQLite database.
+## measurements
 
-Tables:
+Stores measurements in *long format*.
 
-* `bases`
-* `sensors`
-* `messages`
-* `measurements`
+    sensor_ref
+    variable
+    value_num
+    value_text
+    payload_time_utc
+    received_at_utc
+    unit
+    raw_json
 
-The **measurements table** stores data in long format:
+Indexes optimize queries on:
 
-| column           | description               |
-| ---------------- | ------------------------- |
-| sensor_ref       | unique sensor identifier  |
-| variable         | measurement variable      |
-| value_num        | numeric value             |
-| payload_time_utc | timestamp from sensor     |
-| received_at_utc  | time message was received |
+    sensor_ref
+    variable
+    payload_time_utc
 
----
+------------------------------------------------------------------------
+
+# Installation
+
+## Install dependencies
+
+    pip install -r requirements.txt
+
+Recommended Python version:
+
+    Python 3.12
+
+------------------------------------------------------------------------
+
+# MQTT Configuration
+
+Collectors require the following environment variables.
+
+Linux / macOS
+
+    export MQTT_HOST="your_cluster.s1.eu.hivemq.cloud"
+    export MQTT_PORT="8883"
+    export MQTT_USER="username"
+    export MQTT_PASSWORD="password"
+    export MQTT_TOPIC="Aranet/#"
+
+Windows PowerShell
+
+    $env:MQTT_HOST="your_cluster.s1.eu.hivemq.cloud"
+    $env:MQTT_PORT="8883"
+    $env:MQTT_USER="username"
+    $env:MQTT_PASSWORD="password"
+    $env:MQTT_TOPIC="Aranet/#"
+
+------------------------------------------------------------------------
+
+# Supabase Configuration
+
+For the cloud collector and dashboard:
+
+    SUPABASE_URL=https://your-project.supabase.co
+    SUPABASE_KEY=your-anon-key
+    SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+------------------------------------------------------------------------
+
+# Features
+
+-   real-time MQTT ingestion
+-   automatic sensor discovery
+-   flexible measurement storage
+-   cloud database integration
+-   interactive Streamlit dashboard
+-   multi-sensor comparison
+-   CSV data export
+-   scientific formatting of measurements
+-   robust handling of new measurement variables
+
+------------------------------------------------------------------------
 
 # Design Principles
 
-The collector is designed to:
+The platform is designed to:
 
-* support unknown future sensor types
-* store measurements without fixed schema
-* ensure long-term robustness
-* maintain reproducible scientific data
+-   support unknown future sensor types
+-   store measurements without fixed schema
+-   ensure long-term robustness
+-   maintain reproducible scientific datasets
+-   support distributed environmental monitoring networks
 
----
+------------------------------------------------------------------------
 
-# Typical Workflow
+# Project Context
 
-Start acquisition:
+This platform supports activities related to:
 
-```
-python aranet_collector.py run
-```
+*CEA -- Laboratoire National Henri Becquerel (LNHB)*
 
-Inspect sensors:
+Environmental monitoring and radon measurement research.
 
-```
-python aranet_collector.py list-sensors
-```
+The system is deployed as a *testbed for distributed environmental
+monitoring instrumentation* within the *RadonNET project*, enabling the
+evaluation of sensor networks for:
 
-Export dataset:
+-   radon monitoring
+-   aerosol measurements
+-   indoor environmental characterization
+-   instrumentation research and development
 
-```
-python aranet_collector.py export-wide --output dataset.csv
-```
-
-Plot results:
-
-```
-python aranet_collector.py plot --sensor-ref "352406009362/40D246" --variable "radon"
-```
-
----
+------------------------------------------------------------------------
 
 # License
 
-MIT License
+MIT License.
