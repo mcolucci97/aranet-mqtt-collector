@@ -21,17 +21,133 @@ import streamlit as st
 from supabase import Client, create_client
 
 
+#!/usr/bin/env python3
+"""
+Streamlit dashboard for Aranet data stored in Supabase.
+
+Goals of this version:
+- avoid Streamlit Arrow / LargeUtf8 table errors
+- plot the real measurement value (value_num)
+- keep CSV export correct, with numeric value_num
+- stay compatible with Python 3.12
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from supabase import Client, create_client
+
+
 # ============================================================
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(
-    page_title="Lab Sensor Dashboard",
-    page_icon="🔬",
+    page_title="CEA/LNHB RadonNET Environmental Monitoring Testbed",
+    page_icon="🧪",
     layout="wide",
 )
 
-st.title("🔬 Lab Environmental Monitoring")
-st.caption("Real-time and historical data from Aranet Base Station")
+# ------------------------------------------------------------
+# CUSTOM CSS
+# ------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+        .main-header {
+            padding: 0.3rem 0 1.2rem 0;
+            border-bottom: 1px solid rgba(120,120,120,0.25);
+            margin-bottom: 1.2rem;
+        }
+
+        .main-title {
+            font-size: 2.1rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 0.25rem;
+        }
+
+        .main-subtitle {
+            font-size: 1.05rem;
+            color: #555;
+            margin-bottom: 0.2rem;
+        }
+
+        .main-description {
+            font-size: 0.98rem;
+            color: #666;
+            line-height: 1.5;
+            margin-top: 0.5rem;
+        }
+
+        .section-note {
+            background: rgba(240, 242, 246, 0.7);
+            border: 1px solid rgba(120,120,120,0.18);
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .section-note strong {
+            font-weight: 700;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------
+# HEADER WITH LOGOS
+# ------------------------------------------------------------
+CEA_LOGO = Path("cea_logo.png")
+RADONNET_LOGO = Path("radonnet_logo.png")
+
+header_col1, header_col2, header_col3 = st.columns([1.1, 4.6, 1.2])
+
+with header_col1:
+    if CEA_LOGO.exists():
+        st.image(str(CEA_LOGO), use_container_width=True)
+
+with header_col2:
+    st.markdown(
+        """
+        <div class="main-header">
+            <div class="main-title">CEA/LNHB RadonNET Environmental Monitoring Testbed</div>
+            <div class="main-subtitle">
+                Real-time and historical monitoring of indoor environmental parameters in the CEA/LNHB building
+            </div>
+            <div class="main-description">
+                This dashboard supports a testbed for a distributed network of environmental monitoring instruments
+                deployed at <strong>CEA/LNHB</strong>, aimed at tracking parameters relevant to air quality and
+                radiological metrology environments, including <strong>radon</strong>, <strong>particulate matter
+                (PM)</strong>, <strong>temperature</strong>, <strong>humidity</strong>, <strong>pressure</strong>,
+                battery status, and communication indicators.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with header_col3:
+    if RADONNET_LOGO.exists():
+        st.image(str(RADONNET_LOGO), use_container_width=True)
+
+st.markdown(
+    """
+    <div class="section-note">
+        <strong>Testbed scope.</strong> This platform is designed to evaluate and visualize the behavior of a sensor
+        network operating in the CEA/LNHB building, with particular interest in environmental quantities that can
+        affect radon monitoring strategies, aerosol-related measurements, and indoor ambient characterization.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
@@ -892,3 +1008,4 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
