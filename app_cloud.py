@@ -10,17 +10,14 @@ Designed to:
 - show institutional CEA / RadonNET branding
 """
 
-import math
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import base64
 
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 from supabase import create_client
-
 
 # ============================================================
 # PAGE CONFIG
@@ -172,7 +169,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # ============================================================
 # SECRETS
 # ============================================================
@@ -182,7 +178,6 @@ try:
 except Exception as exc:
     st.error(f"Missing Streamlit secrets: {exc}")
     st.stop()
-
 
 # ============================================================
 # UNITS
@@ -194,12 +189,10 @@ VARIABLE_UNITS = {
     "atmosphericpressure": "hPa",
     "battery": "V",
     "rssi": "dBm",
-    "pm1": "kg/m³",
-    "pm2_5": "kg/m³",
-    "pm10": "kg/m³",
+    "pm1": "µg/m³",
+    "pm2_5": "µg/m³",
+    "pm10": "µg/m³",
 }
-
-
 
 # ============================================================
 # SUPABASE
@@ -213,7 +206,7 @@ def get_supabase():
 # HELPERS
 # ============================================================
 def get_unit(variable: str) -> str:
-    return VARIABLE_UNITS.get(variable, "")
+    return VARIABLE_UNITS.get(str(variable).strip().lower(), "")
 
 
 def with_unit(label: str, variable: str) -> str:
@@ -312,43 +305,29 @@ def safe_sensor_name(row, mobile_mode: bool = False):
     return str(sensor_ref)
 
 
-def compute_metrics(df: pd.DataFrame):
-    latest_val = df["value_num"].iloc[-1]
-    prev_val = df["value_num"].iloc[-2] if len(df) > 1 else latest_val
-    delta = latest_val - prev_val
-
-    min_val = df["value_num"].min()
-    max_val = df["value_num"].max()
-    avg_val = df["value_num"].mean()
-    last_update = df["payload_time_utc"].iloc[-1]
-
-    return {
-        "latest": latest_val,
-        "previous": prev_val,
-        "delta": delta,
-        "min": min_val,
-        "max": max_val,
-        "avg": avg_val,
-        "last_update": last_update,
-        "count": len(df),
-    }
-
-
-def df_to_records(df: pd.DataFrame, limit: int | None = None):
+def df_to_display_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert dataframe to a Streamlit-safe display version.
+    This avoids Arrow/LargeUtf8 issues by converting object columns to plain string.
+    """
     if df is None or df.empty:
-        return []
+        return pd.DataFrame()
 
     out = df.copy()
-
-    if limit is not None:
-        out = out.head(limit)
 
     for col in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[col]):
             out[col] = out[col].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif out[col].dtype == "object":
+            out[col] = out[col].astype(str)
 
-    out = out.where(pd.notnull(out), None)
-    return out.to_dict(orient="records")
+    out = out.where(pd.notnull(out), "")
+    return out
+
+
+def safe_table(df: pd.DataFrame, height: int = 350):
+    safe_df = df_to_display_table(df)
+    st.dataframe(safe_df, use_container_width=True, height=height, hide_index=True)
 
 
 def fetch_all(query_builder, page_size: int = 1000):
@@ -482,7 +461,9 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
     df["payload_time_utc"] = pd.to_datetime(df["payload_time_utc"], errors="coerce", utc=True)
     df["received_at_utc"] = pd.to_datetime(df["received_at_utc"], errors="coerce", utc=True)
     df["value_num"] = pd.to_numeric(df["value_num"], errors="coerce")
-    df["value_text"] = df["value_text"].astype(str)
+
+    if "value_text" in df.columns:
+        df["value_text"] = df["value_text"].astype(str)
 
     df = df.dropna(subset=["payload_time_utc", "value_num"])
     df = df.sort_values("payload_time_utc").reset_index(drop=True)
@@ -523,14 +504,13 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
 
 
 # ============================================================
-# SIDEBAR STATE
+# SESSION STATE
 # ============================================================
 if "selected_refs" not in st.session_state:
     st.session_state.selected_refs = []
 
 if "selected_variables" not in st.session_state:
     st.session_state.selected_variables = []
-
 
 # ============================================================
 # SIDEBAR
@@ -588,6 +568,11 @@ if vars_df.empty or "variable" not in vars_df.columns:
 
 all_variables = vars_df["variable"].dropna().unique().tolist()
 
+# pulizia selezione variabili se cambiano i sensori
+st.session_state.selected_variables = [
+    v for v in st.session_state.selected_variables if v in all_variables
+]
+
 col3, col4 = st.sidebar.columns(2)
 if col3.button("Select all variables"):
     st.session_state.selected_variables = all_variables
@@ -609,59 +594,51 @@ if not selected_variables:
     st.warning("Please select at least one measurement.")
     st.stop()
 
-time_container = st.sidebar.container()
-slider_placeholder = st.sidebar.empty()
-options_container = st.sidebar.container()
+range_mode = st.sidebar.radio(
+    "Time Range",
+    ["Last 24 hours", "Last N days"],
+    index=0,
+    key="time_range_radio",
+)
 
-with time_container:
-    range_mode = st.radio(
-        "Time Range",
-        ["Last N days", "Last 24 hours"],
-        index=0,
-        key="time_range_radio",
-    )
-
+days = None
 if range_mode == "Last N days":
-    with slider_placeholder.container():
-        days = st.slider(
-            "Historical Range (Days)",
-            min_value=1,
-            max_value=30,
-            value=7,
-            key="historical_days_slider",
-        )
+    days = st.sidebar.slider(
+        "Historical Range (Days)",
+        min_value=1,
+        max_value=30,
+        value=7,
+        key="historical_days_slider",
+    )
     start_dt = datetime.now(timezone.utc) - timedelta(days=days)
 else:
-    slider_placeholder.empty()
     start_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
 start_utc = start_dt.isoformat()
 
-with options_container:
-    show_points = st.checkbox(
-        "Show markers",
-        value=False,
-        key="show_markers_checkbox",
-    )
+show_points = st.sidebar.checkbox(
+    "Show markers",
+    value=False,
+    key="show_markers_checkbox",
+)
 
-    mobile_mode = st.checkbox(
-        "Mobile-friendly mode",
-        value=True,
-        key="mobile_mode_checkbox",
-    )
+mobile_mode = st.sidebar.checkbox(
+    "Mobile-friendly mode",
+    value=True,
+    key="mobile_mode_checkbox",
+)
 
-    show_plot_debug = st.checkbox(
-        "Show plot debug",
-        value=False,
-        key="show_plot_debug_checkbox",
-    )
+show_plot_debug = st.sidebar.checkbox(
+    "Show plot debug",
+    value=False,
+    key="show_plot_debug_checkbox",
+)
 
-    auto_refresh = st.checkbox(
-        "Auto-refresh every minute",
-        value=False,
-        key="auto_refresh_checkbox",
-    )
-
+auto_refresh = st.sidebar.checkbox(
+    "Auto-refresh every minute",
+    value=False,
+    key="auto_refresh_checkbox",
+)
 
 # ============================================================
 # FETCH DATA
@@ -680,8 +657,10 @@ if data_df.empty:
     st.warning("No data found for the selected filters.")
     st.stop()
 
-data_df["sensor_label"] = data_df.apply(lambda row: safe_sensor_name(row, mobile_mode=mobile_mode), axis=1)
-
+data_df["sensor_label"] = data_df.apply(
+    lambda row: safe_sensor_name(row, mobile_mode=mobile_mode),
+    axis=1,
+)
 
 # ============================================================
 # MOBILE/DESKTOP LAYOUT SETTINGS
@@ -695,7 +674,7 @@ if mobile_mode:
     legend_cfg = dict(
         orientation="h",
         yanchor="top",
-        y=-0.28,
+        y=-0.30,
         xanchor="center",
         x=0.5,
     )
@@ -714,28 +693,6 @@ else:
         x=1.02,
     )
     raw_limit = 100
-
-
-# ============================================================
-# DEBUG / SANITY CHECK
-# ============================================================
-#with st.expander("Debug / data sanity check"):
- #   st.write("Loaded columns:")
-  #  st.write(list(data_df.columns))
-#
- #   st.write("Dtypes:")
-  #  st.write(data_df.dtypes.astype(str))
-#
- #   st.write("First rows:")
-  #  safe_table(data_df.head(10), height=300)
-#
- #   st.write("value_num summary:")
-  #  st.write(data_df["value_num"].describe())
-#
- #   st.write("Sample variable/value pairs:")
-  #  sample_cols = [c for c in ["payload_time_utc", "sensor_label", "variable", "value_num", "value_text"] if c in data_df.columns]
-   # safe_table(data_df[sample_cols].head(20), height=300)
-
 
 # ============================================================
 # OVERVIEW
@@ -760,7 +717,6 @@ else:
     st.caption(
         f"Last update in filtered data: {last_global_update.strftime('%Y-%m-%d %H:%M:%S UTC')}"
     )
-
 
 # ============================================================
 # OVERLAY COMPARISON
@@ -825,8 +781,10 @@ else:
 
     if show_plot_debug:
         st.write("Overlay plot debug:")
-        st.json(df_to_records(overlay_df[["payload_time_utc", "sensor_label", "value_num"]], limit=30))
-
+        safe_table(
+            overlay_df[["payload_time_utc", "sensor_label", "value_num"]].head(30),
+            height=250,
+        )
 
 # ============================================================
 # CURRENT SNAPSHOT
@@ -846,7 +804,6 @@ if not snapshot_df.empty:
             row["sensor_label"],
             format_value_with_unit(row["value_num"], overlay_variable),
         )
-
 
 # ============================================================
 # MULTI-VARIABLE SECTION
@@ -875,7 +832,8 @@ for variable in selected_variables:
     min_val = var_df["value_num"].min()
     max_val = var_df["value_num"].max()
 
-    metrics_cols = st.columns(5 if not mobile_mode else 2)
+    metrics_n = 2 if mobile_mode else 5
+    metrics_cols = st.columns(metrics_n)
     metric_pairs = [
         ("Sensors with data", latest_var_df["sensor_ref"].nunique()),
         ("Average", format_value_with_unit(avg_val, variable)),
@@ -885,7 +843,7 @@ for variable in selected_variables:
     ]
 
     for i, (label, value) in enumerate(metric_pairs):
-        metrics_cols[i % len(metrics_cols)].metric(label, value)
+        metrics_cols[i % metrics_n].metric(label, value)
 
     value_label = f"{variable} [{unit}]" if unit else variable
 
@@ -929,8 +887,10 @@ for variable in selected_variables:
 
     if show_plot_debug:
         st.write(f"{variable} plot debug:")
-        st.json(df_to_records(var_df[["payload_time_utc", "sensor_label", "value_num"]], limit=20))
-
+        safe_table(
+            var_df[["payload_time_utc", "sensor_label", "value_num"]].head(20),
+            height=250,
+        )
 
 # ============================================================
 # LATEST VALUES SUMMARY
@@ -953,8 +913,7 @@ for col in latest_table.columns:
         renamed_columns[col] = with_unit(str(col), str(col))
 
 latest_table = latest_table.rename(columns=renamed_columns)
-st.json(df_to_records(latest_table))
-
+safe_table(latest_table, height=260)
 
 # ============================================================
 # RAW DATA + EXPORT
@@ -985,7 +944,7 @@ with st.expander("View filtered raw data"):
         ] if col in display_df.columns
     ]
 
-    st.json(df_to_records(display_df[display_columns], limit=raw_limit))
+    safe_table(display_df[display_columns].head(raw_limit), height=420)
 
 csv_df = data_df.copy()
 csv = csv_df.to_csv(index=False).encode("utf-8")
@@ -997,13 +956,11 @@ st.download_button(
     mime="text/csv",
 )
 
-
 # ============================================================
 # AUTO REFRESH
 # ============================================================
 if auto_refresh:
-    time.sleep(60)
-    st.rerun()
-
-
-
+    try:
+        st.autorefresh(interval=60_000, key="dashboard_autorefresh")
+    except AttributeError:
+        st.info("Auto-refresh requires a newer Streamlit version. Please refresh manually.")
