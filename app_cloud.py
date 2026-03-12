@@ -14,6 +14,7 @@ import math
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import base64
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -1010,6 +1011,7 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
 
 
