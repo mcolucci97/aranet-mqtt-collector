@@ -14,35 +14,13 @@ from __future__ import annotations
 import math
 import time
 from datetime import datetime, timedelta, timezone
-
-import pandas as pd
-import plotly.graph_objects as go
-import streamlit as st
-from supabase import Client, create_client
-
-
-#!/usr/bin/env python3
-"""
-Streamlit dashboard for Aranet data stored in Supabase.
-
-Goals of this version:
-- avoid Streamlit Arrow / LargeUtf8 table errors
-- plot the real measurement value (value_num)
-- keep CSV export correct, with numeric value_num
-- stay compatible with Python 3.12
-"""
-
-from __future__ import annotations
-
-import math
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from supabase import Client, create_client
+
 
 
 # ============================================================
@@ -1008,4 +986,5 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
 
