@@ -8,6 +8,8 @@ Designed to:
 - plot the real measurement value (value_num)
 - keep CSV export correct
 - show institutional CEA / RadonNET branding
+- reduce repeated full downloads from Supabase
+- support incremental refresh of time series data
 """
 
 import math
@@ -31,6 +33,7 @@ st.set_page_config(
     layout="wide",
 )
 
+
 # ============================================================
 # HEADER WITH RESPONSIVE LOGOS
 # ============================================================
@@ -40,6 +43,7 @@ RADONNET_LOGO = BASE_DIR / "radonnet_logo.png"
 
 
 def image_to_base64(path: Path) -> str | None:
+    """Return file as base64 string if it exists."""
     if not path.exists():
         return None
     return base64.b64encode(path.read_bytes()).decode("utf-8")
@@ -205,6 +209,7 @@ VARIABLE_UNITS = {
 # ============================================================
 @st.cache_resource
 def get_supabase():
+    """Create and cache the Supabase client."""
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -212,15 +217,18 @@ def get_supabase():
 # HELPERS
 # ============================================================
 def get_unit(variable):
+    """Return unit for a variable."""
     return VARIABLE_UNITS.get(str(variable), "")
 
 
 def with_unit(label, variable):
+    """Append unit to a label if available."""
     unit = get_unit(variable)
     return f"{label} [{unit}]" if unit else label
 
 
 def format_value(value, decimals=2):
+    """Format numeric value for UI display."""
     if pd.isna(value):
         return "NA"
 
@@ -244,12 +252,14 @@ def format_value(value, decimals=2):
 
 
 def format_value_with_unit(value, variable, decimals=2):
+    """Format value with unit."""
     base = format_value(value, decimals=decimals)
     unit = get_unit(variable)
     return f"{base} {unit}" if unit else base
 
 
 def choose_tick_format(series):
+    """Choose Plotly tick format based on value scale."""
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return None
@@ -269,6 +279,7 @@ def choose_tick_format(series):
 
 
 def choose_hover_format(series):
+    """Choose Plotly hover format based on value scale."""
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
         return ".2f"
@@ -288,6 +299,7 @@ def choose_hover_format(series):
 
 
 def safe_sensor_name(row):
+    """Return best available sensor display name."""
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
     sensor_ref = row.get("sensor_ref")
@@ -300,6 +312,7 @@ def safe_sensor_name(row):
 
 
 def sensor_option_label(row):
+    """Build sidebar label for one sensor."""
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
     sensor_ref = row.get("sensor_ref")
@@ -319,6 +332,7 @@ def sensor_option_label(row):
 
 
 def fetch_all(query_builder, page_size=1000):
+    """Fetch all paginated rows from Supabase."""
     rows = []
     start = 0
 
@@ -340,10 +354,16 @@ def fetch_all(query_builder, page_size=1000):
     return rows
 
 
-# ============================================================
-# SAFE TABLE RENDERING
-# ============================================================
+def build_cache_signature(sensor_refs, variables):
+    """Build a cache signature based on structural filters only."""
+    return (
+        tuple(sorted(map(str, sensor_refs))),
+        tuple(sorted(map(str, variables))),
+    )
+
+
 def dataframe_for_html(df):
+    """Convert dataframe to HTML-safe display dataframe."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -369,6 +389,7 @@ def dataframe_for_html(df):
 
 
 def safe_table(df, height=None):
+    """Render a dataframe without Arrow conversion issues."""
     if df is None or df.empty:
         st.info("No rows to display.")
         return
@@ -400,8 +421,9 @@ def safe_table(df, height=None):
 # ============================================================
 # DATA LOADING
 # ============================================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def load_bases():
+    """Load all base stations."""
     sb = get_supabase()
 
     rows = fetch_all(
@@ -420,8 +442,9 @@ def load_bases():
     return df
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def load_sensors():
+    """Load all sensors with base metadata."""
     sb = get_supabase()
 
     rows = fetch_all(
@@ -459,17 +482,26 @@ def load_sensors():
     return df
 
 
-@st.cache_data(ttl=60)
-def load_variables(sensor_refs):
+@st.cache_data(ttl=300)
+def load_recent_variables(sensor_refs, lookback_days=30):
+    """
+    Load distinct variables seen recently for selected sensors.
+
+    This avoids scanning the full measurements table history.
+    """
     sb = get_supabase()
 
     if not sensor_refs:
         return pd.DataFrame(columns=["variable", "n"])
 
+    start_utc = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+
     rows = fetch_all(
         sb.table("measurements")
-        .select("sensor_ref, variable")
+        .select("sensor_ref, variable, payload_time_utc")
+        .gte("payload_time_utc", start_utc)
         .in_("sensor_ref", sensor_refs)
+        .order("payload_time_utc")
     )
 
     df = pd.DataFrame(rows)
@@ -487,28 +519,12 @@ def load_variables(sensor_refs):
     return out
 
 
-@st.cache_data(ttl=60)
-def load_multi_timeseries(sensor_refs, variables, start_utc):
-    sb = get_supabase()
-
-    if not sensor_refs or not variables:
+def clean_measurements_df(df, sensors_df):
+    """Clean and enrich raw measurements dataframe."""
+    if df is None or df.empty:
         return pd.DataFrame()
 
-    rows = fetch_all(
-        sb.table("measurements")
-        .select(
-            "id, payload_time_utc, inserted_at, received_at_utc, payload_time_unix, "
-            "base_id, sensor_id, sensor_ref, variable, value_num, value_text, unit"
-        )
-        .gte("payload_time_utc", start_utc)
-        .in_("sensor_ref", sensor_refs)
-        .in_("variable", variables)
-        .order("payload_time_utc")
-    )
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return pd.DataFrame()
+    df = df.copy()
 
     for col in ["payload_time_utc", "inserted_at", "received_at_utc"]:
         if col in df.columns:
@@ -532,10 +548,13 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
     if "sensor_ref" in df.columns:
         df["sensor_ref"] = df["sensor_ref"].map(lambda x: None if pd.isna(x) else str(x))
 
-    df = df.dropna(subset=["payload_time_utc", "value_num", "variable", "sensor_ref"]).copy()
-    df = df[df["value_num"].map(lambda x: pd.notna(x) and math.isfinite(float(x)))].copy()
+    required = ["payload_time_utc", "value_num", "variable", "sensor_ref"]
+    required = [c for c in required if c in df.columns]
+    df = df.dropna(subset=required).copy()
 
-    sensors_df = load_sensors()
+    if "value_num" in df.columns:
+        df = df[df["value_num"].map(lambda x: pd.notna(x) and math.isfinite(float(x)))].copy()
+
     if not sensors_df.empty:
         meta_cols = [
             c for c in [
@@ -574,21 +593,75 @@ def load_multi_timeseries(sensor_refs, variables, start_utc):
             else get_unit(str(row["variable"])),
             axis=1,
         )
+    else:
+        df["unit"] = df["variable"].map(get_unit)
 
     df["sensor_label"] = df.apply(safe_sensor_name, axis=1)
-    df["value_num"] = df["value_num"].astype(float)
     df["sensor_label"] = df["sensor_label"].map(str)
+    df["value_num"] = df["value_num"].astype(float)
 
     sort_cols = [c for c in ["sensor_ref", "variable", "payload_time_utc", "id"] if c in df.columns]
-    df = df.sort_values(sort_cols).reset_index(drop=True)
+    if sort_cols:
+        df = df.sort_values(sort_cols).reset_index(drop=True)
 
     return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_multi_timeseries_initial(sensor_refs, variables, start_utc):
+    """Initial full load for selected sensors and variables."""
+    sb = get_supabase()
+
+    if not sensor_refs or not variables:
+        return pd.DataFrame()
+
+    rows = fetch_all(
+        sb.table("measurements")
+        .select(
+            "id, payload_time_utc, inserted_at, received_at_utc, payload_time_unix, "
+            "base_id, sensor_id, sensor_ref, variable, value_num, value_text, unit"
+        )
+        .gte("payload_time_utc", start_utc)
+        .in_("sensor_ref", sensor_refs)
+        .in_("variable", variables)
+        .order("payload_time_utc")
+    )
+
+    df = pd.DataFrame(rows)
+    sensors_df = load_sensors()
+    return clean_measurements_df(df, sensors_df)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_multi_timeseries_incremental(sensor_refs, variables, last_utc):
+    """Load only rows newer than the last cached timestamp."""
+    sb = get_supabase()
+
+    if not sensor_refs or not variables or not last_utc:
+        return pd.DataFrame()
+
+    rows = fetch_all(
+        sb.table("measurements")
+        .select(
+            "id, payload_time_utc, inserted_at, received_at_utc, payload_time_unix, "
+            "base_id, sensor_id, sensor_ref, variable, value_num, value_text, unit"
+        )
+        .gt("payload_time_utc", last_utc)
+        .in_("sensor_ref", sensor_refs)
+        .in_("variable", variables)
+        .order("payload_time_utc")
+    )
+
+    df = pd.DataFrame(rows)
+    sensors_df = load_sensors()
+    return clean_measurements_df(df, sensors_df)
 
 
 # ============================================================
 # PLOT PREP
 # ============================================================
 def prepare_plot_df(df, variable):
+    """Filter dataframe for one variable and ensure plot-safe columns."""
     out = df[df["variable"] == variable].copy()
 
     if out.empty:
@@ -609,7 +682,39 @@ def prepare_plot_df(df, variable):
     return out
 
 
+def downsample_per_sensor(plot_df, max_points_per_sensor=1200):
+    """Downsample each sensor trace to reduce Plotly load."""
+    if plot_df.empty or "sensor_label" not in plot_df.columns:
+        return plot_df
+
+    parts = []
+
+    for sensor_name in plot_df["sensor_label"].dropna().unique():
+        sub = plot_df[plot_df["sensor_label"] == sensor_name].sort_values("payload_time_utc")
+        n = len(sub)
+
+        if n <= max_points_per_sensor:
+            parts.append(sub)
+            continue
+
+        step = max(1, math.ceil(n / max_points_per_sensor))
+        sampled = sub.iloc[::step].copy()
+
+        if not sampled.empty:
+            last_row = sub.tail(1)
+            sampled = pd.concat([sampled, last_row], ignore_index=True)
+
+        sampled = sampled.drop_duplicates(subset=["payload_time_utc", "sensor_label"], keep="last")
+        parts.append(sampled)
+
+    if not parts:
+        return plot_df.iloc[0:0].copy()
+
+    return pd.concat(parts, ignore_index=True).sort_values(["sensor_label", "payload_time_utc"])
+
+
 def build_timeseries_figure(plot_df, variable, show_points, height):
+    """Build Plotly figure for selected variable."""
     y_title = with_unit(variable.capitalize(), variable)
     value_label = with_unit(variable, variable)
     hover_num_format = choose_hover_format(plot_df["value_num"])
@@ -653,13 +758,22 @@ def build_timeseries_figure(plot_df, variable, show_points, height):
 
 
 # ============================================================
-# SIDEBAR STATE
+# SESSION STATE
 # ============================================================
 if "selected_refs" not in st.session_state:
     st.session_state.selected_refs = []
 
 if "selected_variables" not in st.session_state:
     st.session_state.selected_variables = []
+
+if "ts_cache_df" not in st.session_state:
+    st.session_state.ts_cache_df = pd.DataFrame()
+
+if "ts_cache_signature" not in st.session_state:
+    st.session_state.ts_cache_signature = None
+
+if "ts_cache_last_utc" not in st.session_state:
+    st.session_state.ts_cache_last_utc = None
 
 
 # ============================================================
@@ -707,7 +821,7 @@ if not selected_refs:
     st.stop()
 
 try:
-    vars_df = load_variables(selected_refs)
+    vars_df = load_recent_variables(selected_refs, lookback_days=30)
 except Exception as exc:
     st.error(f"Unable to load variables from Supabase: {exc}")
     st.stop()
@@ -716,7 +830,12 @@ if vars_df.empty or "variable" not in vars_df.columns:
     st.warning("No measurements available for the selected sensors.")
     st.stop()
 
-all_variables = vars_df["variable"].dropna().map(str).unique().tolist()
+UI_EXCLUDED_VARIABLES = {"battery", "rssi"}
+
+all_variables = [
+    v for v in vars_df["variable"].dropna().map(str).unique().tolist()
+    if v not in UI_EXCLUDED_VARIABLES
+]
 
 col3, col4 = st.sidebar.columns(2)
 if col3.button("Select all variables"):
@@ -758,8 +877,6 @@ if range_mode == "Last N days":
 else:
     start_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
-start_utc = start_dt.isoformat()
-
 show_plot_debug = st.sidebar.checkbox("Show plot debug", value=False)
 
 show_points = st.sidebar.checkbox(
@@ -774,19 +891,99 @@ auto_refresh = st.sidebar.checkbox(
     key="auto_refresh_checkbox",
 )
 
+max_points_plot = st.sidebar.slider(
+    "Max points per sensor in plots",
+    min_value=200,
+    max_value=5000,
+    value=1200,
+    step=100,
+    key="max_points_plot_slider",
+)
+
+base_cache_days = st.sidebar.slider(
+    "Local cache window (days)",
+    min_value=2,
+    max_value=60,
+    value=30,
+    step=1,
+    key="base_cache_days_slider",
+)
+
+if st.sidebar.button("Reset local data cache"):
+    st.session_state.ts_cache_df = pd.DataFrame()
+    st.session_state.ts_cache_signature = None
+    st.session_state.ts_cache_last_utc = None
+    st.rerun()
+
 
 # ============================================================
-# FETCH DATA
+# FETCH DATA WITH INCREMENTAL CACHE
 # ============================================================
+current_signature = build_cache_signature(selected_refs, selected_variables)
+base_start_dt = datetime.now(timezone.utc) - timedelta(days=base_cache_days)
+base_start_utc = base_start_dt.isoformat()
+
+cache_needs_reset = (
+    st.session_state.ts_cache_signature != current_signature
+    or st.session_state.ts_cache_df.empty
+)
+
 try:
-    data_df = load_multi_timeseries(
-        sensor_refs=selected_refs,
-        variables=selected_variables,
-        start_utc=start_utc,
-    )
+    if cache_needs_reset:
+        with st.spinner("Loading cached measurement history from Supabase..."):
+            cached_df = load_multi_timeseries_initial(
+                sensor_refs=selected_refs,
+                variables=selected_variables,
+                start_utc=base_start_utc,
+            )
+
+        st.session_state.ts_cache_df = cached_df
+        st.session_state.ts_cache_signature = current_signature
+
+        if not cached_df.empty:
+            st.session_state.ts_cache_last_utc = cached_df["payload_time_utc"].max().isoformat()
+        else:
+            st.session_state.ts_cache_last_utc = base_start_utc
+
+    else:
+        new_rows_df = load_multi_timeseries_incremental(
+            sensor_refs=selected_refs,
+            variables=selected_variables,
+            last_utc=st.session_state.ts_cache_last_utc,
+        )
+
+        if not new_rows_df.empty:
+            combined_df = pd.concat(
+                [st.session_state.ts_cache_df, new_rows_df],
+                ignore_index=True,
+            )
+
+            if "id" in combined_df.columns:
+                combined_df = combined_df.drop_duplicates(subset=["id"], keep="last")
+            else:
+                combined_df = combined_df.drop_duplicates()
+
+            combined_df = combined_df.sort_values("payload_time_utc").reset_index(drop=True)
+
+            min_keep_dt = datetime.now(timezone.utc) - timedelta(days=base_cache_days)
+            combined_df = combined_df[combined_df["payload_time_utc"] >= min_keep_dt].copy()
+
+            st.session_state.ts_cache_df = combined_df
+
+            if not combined_df.empty:
+                st.session_state.ts_cache_last_utc = combined_df["payload_time_utc"].max().isoformat()
+
 except Exception as exc:
     st.error(f"Unable to load time series data from Supabase: {exc}")
     st.stop()
+
+data_df = st.session_state.ts_cache_df.copy()
+
+if data_df.empty:
+    st.warning("No data found for the selected filters.")
+    st.stop()
+
+data_df = data_df[data_df["payload_time_utc"] >= start_dt].copy()
 
 if data_df.empty:
     st.warning("No data found for the selected filters.")
@@ -794,36 +991,16 @@ if data_df.empty:
 
 
 # ============================================================
-# DEBUG / SANITY CHECK
-# ============================================================
-#with st.expander("Debug / data sanity check"):
- #   st.write("Loaded columns:")
-  #  st.write(list(data_df.columns))
-#
- #   st.write("Dtypes:")
-  #  st.write(data_df.dtypes.astype(str))
-#
- #   st.write("First rows:")
-  #  safe_table(data_df.head(10), height=300)
-#
- #   st.write("value_num summary:")
-  #  st.write(data_df["value_num"].describe())
-#
- #   st.write("Sample variable/value pairs:")
-  #  sample_cols = [c for c in ["payload_time_utc", "sensor_label", "variable", "value_num", "value_text"] if c in data_df.columns]
-   # safe_table(data_df[sample_cols].head(20), height=300)
-
-
-# ============================================================
 # OVERVIEW
 # ============================================================
 st.subheader("Testbed Overview")
 
-overview_cols = st.columns(4)
+overview_cols = st.columns(5)
 overview_cols[0].metric("Selected sensors", len(selected_refs))
 overview_cols[1].metric("Selected variables", len(selected_variables))
-overview_cols[2].metric("Rows loaded", len(data_df))
-overview_cols[3].metric("Time span start", start_dt.strftime("%Y-%m-%d %H:%M UTC"))
+overview_cols[2].metric("Rows displayed", len(data_df))
+overview_cols[3].metric("Cache rows", len(st.session_state.ts_cache_df))
+overview_cols[4].metric("Time span start", start_dt.strftime("%Y-%m-%d %H:%M UTC"))
 
 last_global_update = data_df["payload_time_utc"].max()
 if pd.isna(last_global_update):
@@ -850,18 +1027,23 @@ overlay_df = prepare_plot_df(data_df, overlay_variable)
 if overlay_df.empty:
     st.info("No data available for the selected overlay variable.")
 else:
+    overlay_plot_df = downsample_per_sensor(
+        overlay_df,
+        max_points_per_sensor=max_points_plot,
+    )
+
     if show_plot_debug:
         with st.expander("Overlay debug values"):
             st.write("Dtypes used for plotting:")
-            st.write(overlay_df[["payload_time_utc", "sensor_label", "value_num"]].dtypes.astype(str))
+            st.write(overlay_plot_df[["payload_time_utc", "sensor_label", "value_num"]].dtypes.astype(str))
             st.write("First plotting rows:")
             safe_table(
-                overlay_df[["payload_time_utc", "sensor_label", "value_num"]].head(20),
+                overlay_plot_df[["payload_time_utc", "sensor_label", "value_num"]].head(20),
                 height=300,
             )
 
     fig_overlay = build_timeseries_figure(
-        plot_df=overlay_df,
+        plot_df=overlay_plot_df,
         variable=overlay_variable,
         show_points=show_points,
         height=550,
@@ -903,6 +1085,11 @@ for variable in selected_variables:
     if var_df.empty:
         continue
 
+    var_plot_df = downsample_per_sensor(
+        var_df,
+        max_points_per_sensor=max_points_plot,
+    )
+
     st.markdown(f"### {with_unit(variable.capitalize(), variable)}")
 
     latest_var_df = (
@@ -924,14 +1111,14 @@ for variable in selected_variables:
 
     if show_plot_debug:
         with st.expander(f"Debug plot values - {variable}"):
-            st.write(var_df[["payload_time_utc", "sensor_label", "value_num"]].dtypes.astype(str))
+            st.write(var_plot_df[["payload_time_utc", "sensor_label", "value_num"]].dtypes.astype(str))
             safe_table(
-                var_df[["payload_time_utc", "sensor_label", "value_num"]].head(20),
+                var_plot_df[["payload_time_utc", "sensor_label", "value_num"]].head(20),
                 height=250,
             )
 
     fig_var = build_timeseries_figure(
-        plot_df=var_df,
+        plot_df=var_plot_df,
         variable=variable,
         show_points=show_points,
         height=420,
@@ -1028,11 +1215,3 @@ st.download_button(
 if auto_refresh:
     time.sleep(60)
     st.rerun()
-
-
-
-
-
-
-
-
