@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import base64
+import hmac 
 
 import pandas as pd
 import plotly.graph_objects as go
