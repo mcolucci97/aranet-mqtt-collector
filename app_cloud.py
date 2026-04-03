@@ -24,6 +24,7 @@ import streamlit as st
 from supabase import create_client
 import io 
 from plotly.subplots import make_subplots  # for multi-panel figures
+import matplotlib.pyplot as plt  # for PNG export
 
 
 # ============================================================
