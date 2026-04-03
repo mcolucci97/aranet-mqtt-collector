@@ -198,6 +198,9 @@ DEFAULT_DASHBOARD_VARIABLES = [
     "temperature",
     "humidity",
     "atmosphericpressure",
+    "pm1",
+    "pm2_5",
+    "pm10",
 ]
 
 HISTORICAL_EXPORT_VARIABLES = [
@@ -205,6 +208,9 @@ HISTORICAL_EXPORT_VARIABLES = [
     "temperature",
     "humidity",
     "atmosphericpressure",
+    "pm1",
+    "pm2_5",
+    "pm10",
 ]
 
 MAX_DASHBOARD_DAYS = 30
@@ -214,7 +220,6 @@ MAX_DASHBOARD_DAYS = 30
 # SUPABASE CONNECTION
 # ============================================================
 @st.cache_resource
-
 def get_supabase():
     return create_client(
         st.secrets["SUPABASE_URL"],
@@ -229,9 +234,11 @@ def get_unit(variable: str) -> str:
     return VARIABLE_UNITS.get(variable, "")
 
 
+
 def with_unit(label: str, variable: str) -> str:
     unit = get_unit(variable)
     return f"{label} [{unit}]" if unit else label
+
 
 
 def format_value(value, decimals: int = 2) -> str:
@@ -250,10 +257,12 @@ def format_value(value, decimals: int = 2) -> str:
     return f"{value:.{decimals}f}"
 
 
+
 def format_value_with_unit(value, variable: str, decimals: int = 2) -> str:
     base = format_value(value, decimals=decimals)
     unit = get_unit(variable)
     return f"{base} {unit}" if unit else base
+
 
 
 def choose_plot_number_format(series: pd.Series):
@@ -274,6 +283,7 @@ def choose_plot_number_format(series: pd.Series):
     return None
 
 
+
 def choose_hover_format(series: pd.Series) -> str:
     if series is None or len(series) == 0:
         return ".2f"
@@ -292,6 +302,7 @@ def choose_hover_format(series: pd.Series) -> str:
     return ".2f"
 
 
+
 def format_sensor_label(row):
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
@@ -306,6 +317,7 @@ def format_sensor_label(row):
     return f"{display_name} ({display_id})", sensor_ref
 
 
+
 def safe_sensor_name(row):
     sensor_name = row.get("sensor_name")
     sensor_id = row.get("sensor_id")
@@ -316,6 +328,7 @@ def safe_sensor_name(row):
     if pd.notna(sensor_id):
         return str(sensor_id)
     return str(sensor_ref)
+
 
 
 def optimize_dataframe_types(df: pd.DataFrame) -> pd.DataFrame:
@@ -346,6 +359,7 @@ def optimize_dataframe_types(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+
 def fetch_all(query_builder, page_size: int = 1000):
     """
     Fetch all rows from a Supabase query using pagination.
@@ -369,6 +383,7 @@ def fetch_all(query_builder, page_size: int = 1000):
         start += page_size
 
     return all_rows
+
 
 
 def merge_sensor_metadata(df: pd.DataFrame, sensors_df: pd.DataFrame) -> pd.DataFrame:
@@ -397,8 +412,14 @@ def merge_sensor_metadata(df: pd.DataFrame, sensors_df: pd.DataFrame) -> pd.Data
     return out
 
 
-def build_png_figure(df: pd.DataFrame, sensor_label: str, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> io.BytesIO:
-    variables = [v for v in HISTORICAL_EXPORT_VARIABLES if v in df["variable"].unique()]
+
+def build_png_figure(
+    df: pd.DataFrame,
+    sensor_label: str,
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+) -> io.BytesIO:
+    variables = [v for v in HISTORICAL_EXPORT_VARIABLES if v in df["variable"].astype(str).unique()]
     nrows = max(1, len(variables))
 
     fig, axes = plt.subplots(nrows=nrows, ncols=1, figsize=(12, 3.2 * nrows), sharex=True)
@@ -407,7 +428,7 @@ def build_png_figure(df: pd.DataFrame, sensor_label: str, start_dt: pd.Timestamp
         axes = [axes]
 
     for ax, variable in zip(axes, variables):
-        var_df = df[df["variable"] == variable].sort_values("payload_time_utc")
+        var_df = df[df["variable"].astype(str) == variable].sort_values("payload_time_utc")
         ax.plot(var_df["payload_time_utc"], var_df["value_num"], linewidth=1.2)
         ax.set_ylabel(with_unit(variable.capitalize(), variable))
         ax.grid(True, alpha=0.3)
@@ -521,9 +542,7 @@ def load_historical_export(sensor_ref: str, variables, start_utc: str, end_utc: 
 
     rows = fetch_all(
         sb.table("measurements")
-        .select(
-            "payload_time_utc, sensor_ref, variable, value_num, unit"
-        )
+        .select("payload_time_utc, sensor_ref, variable, value_num, unit")
         .gte("payload_time_utc", start_utc)
         .lte("payload_time_utc", end_utc)
         .eq("sensor_ref", sensor_ref)
@@ -592,10 +611,14 @@ if mode == "Dashboard (≤ 30 days)":
         st.warning("Please select at least one sensor.")
         st.stop()
 
+    available_dashboard_variables = [
+        v for v in DEFAULT_DASHBOARD_VARIABLES if v in VARIABLE_UNITS
+    ]
+
     dashboard_variables = st.sidebar.multiselect(
         "Select variables",
-        options=DEFAULT_DASHBOARD_VARIABLES,
-        default=[v for v in ["radon", "temperature", "humidity"] if v in DEFAULT_DASHBOARD_VARIABLES],
+        options=available_dashboard_variables,
+        default=[v for v in ["radon", "temperature", "humidity"] if v in available_dashboard_variables],
     )
 
     if not dashboard_variables:
@@ -645,88 +668,19 @@ if mode == "Dashboard (≤ 30 days)":
             f"Last update in filtered data: {last_global_update.strftime('%Y-%m-%d %H:%M:%S UTC')}"
         )
 
-    st.subheader("Overlay comparison")
-    overlay_variable = st.selectbox(
-        "Variable for sensor comparison",
-        options=dashboard_variables,
-        index=0,
-    )
+    st.subheader("Selected variables")
 
-    overlay_df = data_df[data_df["variable"] == overlay_variable].copy()
-    overlay_unit = get_unit(overlay_variable)
+    for variable in dashboard_variables:
+        var_df = data_df[data_df["variable"].astype(str) == variable].copy()
+        if var_df.empty:
+            st.info(f"No aggregated hourly data available for {variable}.")
+            continue
 
-    if overlay_df.empty:
-        st.info("No data available for the selected overlay variable.")
-    else:
-        hover_num_format = choose_hover_format(overlay_df["value_num"])
-        tick_format = choose_plot_number_format(overlay_df["value_num"])
-        y_title = with_unit(overlay_variable.capitalize(), overlay_variable)
-        value_label = f"{overlay_variable} [{overlay_unit}]" if overlay_unit else overlay_variable
-
-        fig_overlay = go.Figure()
-        for sensor_label, sensor_df in overlay_df.groupby("sensor_label", observed=True):
-            fig_overlay.add_trace(
-                go.Scattergl(
-                    x=sensor_df["payload_time_utc"],
-                    y=sensor_df["value_num"],
-                    mode="lines+markers" if show_points else "lines",
-                    name=str(sensor_label),
-                    hovertemplate=(
-                        "<b>Time</b>: %{x|%Y-%m-%d %H:%M:%S}<br>"
-                        "<b>Sensor</b>: %{fullData.name}<br>"
-                        f"<b>{value_label}</b>: %{{y:{hover_num_format}}}<extra></extra>"
-                    ),
-                )
-            )
-
-        layout_kwargs = dict(
-            height=550,
-            margin=dict(l=20, r=20, t=40, b=20),
-            xaxis_title="Timestamp (UTC)",
-            yaxis_title=y_title,
-            hovermode="x unified",
-            legend_title="Sensor",
-            template="plotly_white",
-        )
-        if tick_format:
-            layout_kwargs["yaxis"] = dict(tickformat=tick_format)
-
-        fig_overlay.update_layout(**layout_kwargs)
-        st.plotly_chart(fig_overlay, use_container_width=True)
-
-    st.subheader(f"Current snapshot for '{overlay_variable}'")
-    snapshot_df = (
-        overlay_df.sort_values("payload_time_utc")
-        .groupby("sensor_ref", as_index=False, observed=True)
-        .tail(1)
-    )
-
-    if not snapshot_df.empty:
-        ncols = min(4, len(snapshot_df))
-        metric_cols = st.columns(ncols)
-
-        for idx, (_, row) in enumerate(snapshot_df.iterrows()):
-            col = metric_cols[idx % ncols]
-            col.metric(
-                str(row["sensor_label"]),
-                format_value_with_unit(row["value_num"], overlay_variable),
-            )
-
-    st.subheader("Detailed variable view")
-    detailed_variable = st.selectbox(
-        "Select one variable for detailed plot",
-        options=dashboard_variables,
-        index=0,
-        key="detailed_variable_dashboard",
-    )
-
-    var_df = data_df[data_df["variable"] == detailed_variable].copy()
-    if not var_df.empty:
-        y_title = with_unit(detailed_variable.capitalize(), detailed_variable)
+        y_title = with_unit(variable.capitalize(), variable)
         hover_num_format = choose_hover_format(var_df["value_num"])
         tick_format = choose_plot_number_format(var_df["value_num"])
-        unit = get_unit(detailed_variable)
-        value_label = f"{detailed_variable} [{unit}]" if unit else detailed_variable
+        unit = get_unit(variable)
+        value_label = f"{variable} [{unit}]" if unit else variable
 
         latest_var_df = (
             var_df.sort_values("payload_time_utc")
@@ -738,11 +692,12 @@ if mode == "Dashboard (≤ 30 days)":
         min_val = var_df["value_num"].min()
         max_val = var_df["value_num"].max()
 
+        st.markdown(f"### {y_title}")
         metrics_cols = st.columns(5)
         metrics_cols[0].metric("Sensors with data", latest_var_df["sensor_ref"].nunique())
-        metrics_cols[1].metric("Average", format_value_with_unit(avg_val, detailed_variable))
-        metrics_cols[2].metric("Minimum", format_value_with_unit(min_val, detailed_variable))
-        metrics_cols[3].metric("Maximum", format_value_with_unit(max_val, detailed_variable))
+        metrics_cols[1].metric("Average", format_value_with_unit(avg_val, variable))
+        metrics_cols[2].metric("Minimum", format_value_with_unit(min_val, variable))
+        metrics_cols[3].metric("Maximum", format_value_with_unit(max_val, variable))
         metrics_cols[4].metric("Points", len(var_df))
 
         fig_var = go.Figure()
@@ -798,7 +753,7 @@ if mode == "Dashboard (≤ 30 days)":
     with st.expander("View hourly aggregated raw table"):
         display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
         display_df["display_value"] = display_df.apply(
-            lambda row: format_value_with_unit(row["value_num"], row["variable"]),
+            lambda row: format_value_with_unit(row["value_num"], str(row["variable"])),
             axis=1,
         )
 
@@ -828,6 +783,8 @@ if mode == "Dashboard (≤ 30 days)":
         )
 
         csv_df = display_df.copy()
+        csv_df["sensor_label"] = csv_df["sensor_label"].astype(str)
+        csv_df["variable"] = csv_df["variable"].astype(str)
         csv = csv_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="📥 Download hourly aggregated CSV",
@@ -871,7 +828,7 @@ else:
 
     max_days = (end_dt - start_dt).days + 1
     st.info(
-        "Historical export uses raw 10-minute data for one detector at a time and only the 4 main variables."
+        "Historical export uses raw 10-minute data for one detector at a time and only the main environmental variables."
     )
     st.caption(f"Selected interval: {max_days} day(s)")
 
@@ -943,10 +900,16 @@ else:
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    png_buffer = build_png_figure(export_df, selected_sensor_label, export_df["payload_time_utc"].min(), export_df["payload_time_utc"].max())
+    png_buffer = build_png_figure(
+        export_df,
+        selected_sensor_label,
+        export_df["payload_time_utc"].min(),
+        export_df["payload_time_utc"].max(),
+    )
 
     csv_df = export_df.copy()
     csv_df["sensor_label"] = csv_df["sensor_label"].astype(str)
+    csv_df["variable"] = csv_df["variable"].astype(str)
     csv = csv_df.to_csv(index=False).encode("utf-8")
 
     download_cols = st.columns(2)
@@ -999,3 +962,4 @@ else:
 if auto_refresh and mode == "Dashboard (≤ 30 days)":
     time.sleep(60)
     st.rerun()
+
