@@ -657,6 +657,7 @@ page_mode = st.sidebar.radio(
 
 auto_refresh = st.sidebar.checkbox("Auto-refresh every minute", value=False)
 show_points = st.sidebar.checkbox("Show markers", value=False)
+show_lines = st.sidebar.checkbox("Show lines", value=True)
 
 try:
     sensors_df = load_sensors()
@@ -797,8 +798,21 @@ if page_mode == "Dashboard":
 
         unit = get_unit(variable)
         value_label = f"{variable} [{unit}]" if unit else variable
+        
+        # Ensure at least one visualization mode is active
+        if not show_lines and not show_points:
+        # fallback automatico: riattivo le linee
+        show_lines = True
+
+        # Build mode string dynamically
+        mode = ""
+        if show_lines:
+            mode += "lines"
+        if show_points:
+            mode += "+markers" if mode else "markers"
+
         fig_var.update_traces(
-            mode="lines+markers" if show_points else "lines",
+            mode=mode,
             hovertemplate=(
                 "<b>Time</b>: %{x|%Y-%m-%d %H:%M:%S}<br>"
                 "<b>Sensor</b>: %{fullData.name}<br>"
