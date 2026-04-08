@@ -802,7 +802,7 @@ if page_mode == "Dashboard":
         # Ensure at least one visualization mode is active
         if not show_lines and not show_points:
         # fallback automatico: riattivo le linee
-        show_lines = True
+            show_lines = True
 
         # Build mode string dynamically
         mode = ""
