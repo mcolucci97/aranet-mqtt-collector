@@ -1006,32 +1006,29 @@ if page_mode == "Dashboard":
 
     st.subheader("Hourly aggregated data & export")
     with st.expander("View aggregated hourly data"):
-        display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
-        display_df["display_value"] = display_df.apply(
-            lambda row: format_value_with_unit(row["value_num"], str(row["variable"])),
-            axis=1,
-        )
-        display_columns = [
-            col for col in [
-                "payload_time_utc",
-                "sensor_label",
-                "sensor_id",
-                "sensor_ref",
-                "variable",
-                "value_num",
-                "n_points",
-                "value_min",
-                "value_max",
-                "value_std",
-                "display_value",
-                "base_id",
-                "base_name",
-            ]
-            if col in display_df.columns
+    display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
+    display_df["display_value"] = display_df.apply(
+        lambda row: format_value_with_unit(row["value_num"], str(row["variable"])),
+        axis=1,
+    )
+    display_columns = [
+        col for col in [
+            "payload_time_utc",
+            "sensor_id",
+            "sensor_ref",
+            "variable",
+            "value_num",
+            "n_points",
+            "value_min",
+            "value_max",
+            "value_std",
+            "display_value",
+            "base_id",
+            "base_name",
         ]
-        rename_map = {"sensor_label": "sensor_id_display"}
-        display_df = display_df.rename(columns=rename_map)
-        st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
+        if col in display_df.columns
+    ]
+    st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
 
     csv_df = data_df.copy()
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
