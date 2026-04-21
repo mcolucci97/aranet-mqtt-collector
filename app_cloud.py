@@ -1007,10 +1007,12 @@ if page_mode == "Dashboard":
     st.subheader("Hourly aggregated data & export")
     with st.expander("View aggregated hourly data"):
     display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
+
     display_df["display_value"] = display_df.apply(
         lambda row: format_value_with_unit(row["value_num"], str(row["variable"])),
         axis=1,
     )
+
     display_columns = [
         col for col in [
             "payload_time_utc",
@@ -1028,6 +1030,7 @@ if page_mode == "Dashboard":
         ]
         if col in display_df.columns
     ]
+
     st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
 
     csv_df = data_df.copy()
