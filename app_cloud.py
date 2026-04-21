@@ -6,10 +6,10 @@ Compatible with Python 3.12.
 
 Main design choices:
 - sensor_id is the only stable logical sensor identifier
+- only sensor_id is displayed in the UI
 - measurements_1h is used for fast dashboard rendering
 - measurements is used for historical raw export
 - room-based selection is supported through rooms + room_sensors tables
-- human-readable labels are displayed, but never used as technical keys
 """
 
 import time
@@ -296,18 +296,15 @@ def get_supabase():
 # GENERIC HELPERS
 # ============================================================
 def get_unit(variable: str) -> str:
-    """Return unit for a variable if configured."""
     return VARIABLE_UNITS.get(variable, "")
 
 
 def with_unit(label: str, variable: str) -> str:
-    """Append unit to a label if available."""
     unit = get_unit(variable)
     return f"{label} [{unit}]" if unit else label
 
 
 def format_value(value, decimals: int = 2) -> str:
-    """Format numeric values for display."""
     if pd.isna(value):
         return "NA"
 
@@ -322,14 +319,12 @@ def format_value(value, decimals: int = 2) -> str:
 
 
 def format_value_with_unit(value, variable: str, decimals: int = 2) -> str:
-    """Format a numeric value and append its unit."""
     base = format_value(value, decimals=decimals)
     unit = get_unit(variable)
     return f"{base} {unit}" if unit else base
 
 
 def choose_plot_number_format(series: pd.Series):
-    """Choose axis numeric format based on data magnitude."""
     if series is None or len(series) == 0:
         return None
 
@@ -348,7 +343,6 @@ def choose_plot_number_format(series: pd.Series):
 
 
 def choose_hover_format(series: pd.Series) -> str:
-    """Choose hover numeric format based on data magnitude."""
     if series is None or len(series) == 0:
         return ".2f"
 
@@ -367,13 +361,11 @@ def choose_hover_format(series: pd.Series) -> str:
 
 
 def order_variables(variables: list[str]) -> list[str]:
-    """Return variables ordered by the configured preferred order."""
     order_map = {name: idx for idx, name in enumerate(DEFAULT_VARIABLE_ORDER)}
     return sorted(variables, key=lambda x: (order_map.get(x, 999), x))
 
 
 def fetch_all(query_builder, page_size: int = 1000):
-    """Fetch all rows from a Supabase query using pagination."""
     all_rows = []
     start = 0
 
@@ -399,7 +391,6 @@ def normalize_timeseries_df(
     time_col: str,
     value_col: str = "value_num",
 ) -> pd.DataFrame:
-    """Normalize timestamps and numeric values and drop unusable rows."""
     if df.empty:
         return df
 
@@ -419,22 +410,13 @@ def normalize_timeseries_df(
     return df.sort_values(time_col).reset_index(drop=True)
 
 
-def build_sensor_label(sensor_name: str | None, sensor_id: str | None) -> str:
-    """Build a human-readable sensor label from name and ID."""
+def build_sensor_label(sensor_id: str | None) -> str:
     sid = str(sensor_id).strip() if pd.notna(sensor_id) and str(sensor_id).strip() else "unknown-id"
-    sname = str(sensor_name).strip() if pd.notna(sensor_name) and str(sensor_name).strip() else ""
-
-    if sname:
-        return f"{sname} ({sid})"
     return sid
 
 
 def safe_sensor_label_from_row(row: pd.Series) -> str:
-    """Build a stable display label from a DataFrame row."""
-    return build_sensor_label(
-        sensor_name=row.get("sensor_name"),
-        sensor_id=row.get("sensor_id"),
-    )
+    return build_sensor_label(row.get("sensor_id"))
 
 
 def attach_sensor_metadata_on_id(df: pd.DataFrame, sensors_df: pd.DataFrame) -> pd.DataFrame:
@@ -449,7 +431,6 @@ def attach_sensor_metadata_on_id(df: pd.DataFrame, sensors_df: pd.DataFrame) -> 
             "sensor_id",
             "sensor_ref",
             "base_id",
-            "sensor_name",
             "product_number",
             "base_name",
         ]
@@ -459,7 +440,7 @@ def attach_sensor_metadata_on_id(df: pd.DataFrame, sensors_df: pd.DataFrame) -> 
     sensors_meta = sensors_df[meta_cols].drop_duplicates(subset=["sensor_id"], keep="last")
     out = df.merge(sensors_meta, on="sensor_id", how="left", suffixes=("", "_meta"))
 
-    for col in ["sensor_ref", "base_id", "sensor_name", "product_number", "base_name"]:
+    for col in ["sensor_ref", "base_id", "product_number", "base_name"]:
         meta_col = f"{col}_meta"
         if meta_col in out.columns:
             if col in out.columns:
@@ -477,7 +458,6 @@ def build_png_figure(
     start_dt: pd.Timestamp,
     end_dt: pd.Timestamp,
 ) -> io.BytesIO:
-    """Build a multi-panel PNG figure for historical export using Matplotlib."""
     variables = [v for v in HISTORICAL_EXPORT_VARIABLES if v in df["variable"].astype(str).unique()]
     nrows = max(1, len(variables))
 
@@ -489,16 +469,14 @@ def build_png_figure(
         var_df = df[df["variable"].astype(str) == variable].copy()
         var_df = var_df.sort_values("payload_time_utc")
 
-        # Plot one line per physical sensor
         for sensor_id, sdf in var_df.groupby("sensor_id"):
-            label = sdf["sensor_label"].iloc[0] if "sensor_label" in sdf.columns else str(sensor_id)
+            label = str(sensor_id)
             ax.plot(sdf["payload_time_utc"], sdf["value_num"], linewidth=1.2, label=label)
 
         ax.set_ylabel(with_unit(variable, variable))
         ax.grid(True, alpha=0.3)
         ax.set_title(variable)
 
-        # Avoid legend clutter when too many sensors are present
         if var_df["sensor_id"].nunique() <= 10:
             ax.legend(fontsize=8)
 
@@ -519,25 +497,18 @@ def build_png_figure(
 
 def build_selection_summary(
     selected_sensor_ids: list[str],
-    sensors_df: pd.DataFrame,
     room_label: str | None = None,
 ) -> str:
-    """Build a short human-readable summary of the active selection."""
     if room_label:
         return room_label
 
     if len(selected_sensor_ids) == 1:
-        sid = selected_sensor_ids[0]
-        row = sensors_df[sensors_df["sensor_id"].astype(str) == str(sid)]
-        if not row.empty:
-            return safe_sensor_label_from_row(row.iloc[0])
-        return str(sid)
+        return selected_sensor_ids[0]
 
     return f"{len(selected_sensor_ids)} selected sensors"
 
 
 def build_mode_string(show_lines: bool, show_points: bool) -> str:
-    """Build Plotly trace mode string while ensuring at least one mode is enabled."""
     if not show_lines and not show_points:
         show_lines = True
 
@@ -554,7 +525,6 @@ def build_mode_string(show_lines: bool, show_points: bool) -> str:
 # ============================================================
 @st.cache_data(ttl=60)
 def load_bases() -> pd.DataFrame:
-    """Load bases metadata."""
     sb = get_supabase()
     rows = fetch_all(
         sb.table("bases")
@@ -575,7 +545,6 @@ def load_bases() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_sensors() -> pd.DataFrame:
-    """Load sensors metadata and keep one row per physical sensor_id."""
     sb = get_supabase()
     rows = fetch_all(
         sb.table("sensors")
@@ -621,7 +590,6 @@ def load_sensors() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_rooms() -> pd.DataFrame:
-    """Load room metadata."""
     sb = get_supabase()
     rows = fetch_all(
         sb.table("rooms")
@@ -642,7 +610,6 @@ def load_rooms() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_room_sensors() -> pd.DataFrame:
-    """Load active sensor-room assignments."""
     sb = get_supabase()
     rows = fetch_all(
         sb.table("room_sensors")
@@ -665,7 +632,6 @@ def load_room_sensors() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_dashboard_variables(sensor_ids: tuple[str, ...]) -> pd.DataFrame:
-    """Load available variables from the aggregated hourly table for selected sensors."""
     sb = get_supabase()
 
     if not sensor_ids:
@@ -701,7 +667,6 @@ def load_dashboard_timeseries(
     variables: tuple[str, ...],
     start_utc: str,
 ) -> pd.DataFrame:
-    """Load aggregated hourly data for the dashboard using stable sensor_id."""
     sb = get_supabase()
 
     if not sensor_ids or not variables:
@@ -741,7 +706,6 @@ def load_historical_raw(
     start_utc: str,
     end_utc: str,
 ) -> pd.DataFrame:
-    """Load raw data for one or more physical sensors over an arbitrary user-defined period."""
     sb = get_supabase()
 
     if not sensor_ids or not variables:
@@ -808,13 +772,11 @@ if sensors_df.empty:
     st.error("No sensors found in Supabase. Is the connector running?")
     st.stop()
 
-# Build sensor option labels
 sensor_options: dict[str, str] = {}
 for _, sensor_row in sensors_df.iterrows():
     sensor_id = str(sensor_row["sensor_id"])
-    sensor_options[sensor_id] = safe_sensor_label_from_row(sensor_row)
+    sensor_options[sensor_id] = sensor_id
 
-# Build room option labels
 room_options: dict[str, str] = {}
 if not rooms_df.empty:
     for _, room_row in rooms_df.iterrows():
@@ -824,7 +786,6 @@ if not rooms_df.empty:
 
 
 def get_sensor_ids_for_room(room_id: str) -> list[str]:
-    """Return all active sensor IDs assigned to a room."""
     if room_sensors_df.empty:
         return []
 
@@ -884,7 +845,7 @@ if page_mode == "Dashboard":
             format_func=lambda x: sensor_options[x],
             default=list(sensor_options.keys())[: min(3, len(sensor_options))],
         )
-        selection_label = build_selection_summary(selected_sensor_ids, sensors_df)
+        selection_label = build_selection_summary(selected_sensor_ids)
 
     else:
         selected_sensor_ids = list(sensor_options.keys())
@@ -943,7 +904,6 @@ if page_mode == "Dashboard":
         st.warning("No data found for the selected dashboard filters.")
         st.stop()
 
-    # Overview
     st.subheader("Overview")
     overview_cols = st.columns(4)
     overview_cols[0].metric("Selected sensors", len(selected_sensor_ids))
@@ -957,7 +917,6 @@ if page_mode == "Dashboard":
     if pd.notna(last_global_update):
         st.caption(f"Last update in filtered data: {last_global_update.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-    # Variable-by-variable charts
     st.subheader("Selected variables")
 
     for variable in selected_variables:
@@ -996,7 +955,7 @@ if page_mode == "Dashboard":
             labels={
                 "payload_time_utc": "Time (UTC)",
                 "value_num": y_title,
-                "sensor_label": "Sensor",
+                "sensor_label": "Sensor ID",
             },
             template="plotly_white",
         )
@@ -1008,7 +967,7 @@ if page_mode == "Dashboard":
             mode=trace_mode,
             hovertemplate=(
                 "<b>Time</b>: %{x|%Y-%m-%d %H:%M:%S}<br>"
-                "<b>Sensor</b>: %{fullData.name}<br>"
+                "<b>Sensor ID</b>: %{fullData.name}<br>"
                 f"<b>{value_label}</b>: %{{y:{hover_num_format}}}<extra></extra>"
             ),
         )
@@ -1019,7 +978,7 @@ if page_mode == "Dashboard":
             xaxis_title="Timestamp (UTC)",
             yaxis_title=y_title,
             hovermode="x unified",
-            legend_title="Sensor",
+            legend_title="Sensor ID",
         )
         if tick_format:
             layout_kwargs["yaxis"] = dict(tickformat=tick_format)
@@ -1027,7 +986,6 @@ if page_mode == "Dashboard":
         fig_var.update_layout(**layout_kwargs)
         st.plotly_chart(fig_var, use_container_width=True)
 
-    # Latest values table
     st.subheader("Latest values table")
     latest_table = (
         data_df.sort_values("payload_time_utc")
@@ -1040,13 +998,12 @@ if page_mode == "Dashboard":
     renamed_columns = {}
     for col in latest_table.columns:
         if col == "sensor_label":
-            renamed_columns[col] = "Sensor"
+            renamed_columns[col] = "Sensor ID"
         else:
             renamed_columns[col] = with_unit(str(col), str(col))
     latest_table = latest_table.rename(columns=renamed_columns)
     st.dataframe(latest_table, use_container_width=True, hide_index=True)
 
-    # Aggregated data table and export
     st.subheader("Hourly aggregated data & export")
     with st.expander("View aggregated hourly data"):
         display_df = data_df.sort_values("payload_time_utc", ascending=False).copy()
@@ -1069,10 +1026,11 @@ if page_mode == "Dashboard":
                 "display_value",
                 "base_id",
                 "base_name",
-                "sensor_name",
             ]
             if col in display_df.columns
         ]
+        rename_map = {"sensor_label": "sensor_id_display"}
+        display_df = display_df.rename(columns=rename_map)
         st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
 
     csv_df = data_df.copy()
@@ -1109,7 +1067,7 @@ else:
             index=0,
         )
         export_sensor_ids = (selected_sensor_id,)
-        export_label = sensor_options[selected_sensor_id]
+        export_label = selected_sensor_id
 
     else:
         if not room_options:
@@ -1177,7 +1135,6 @@ else:
         st.warning("No historical raw data found for the selected filters.")
         st.stop()
 
-    # Summary metrics
     summary_cols = st.columns(4)
     summary_cols[0].metric("Selection", export_label)
     summary_cols[1].metric("Variables", export_df["variable"].astype(str).nunique())
@@ -1187,7 +1144,6 @@ else:
         export_df["payload_time_utc"].max().strftime("%Y-%m-%d %H:%M UTC"),
     )
 
-    # Multi-panel Plotly chart
     st.subheader("Historical chart")
     available_variables = [
         v for v in HISTORICAL_EXPORT_VARIABLES
@@ -1218,7 +1174,7 @@ else:
                     showlegend=(row_idx == 1),
                     hovertemplate=(
                         "<b>Time</b>: %{x|%Y-%m-%d %H:%M:%S}<br>"
-                        "<b>Sensor</b>: %{fullData.name}<br>"
+                        "<b>Sensor ID</b>: %{fullData.name}<br>"
                         f"<b>{value_label}</b>: %{{y:{hover_num_format}}}<extra></extra>"
                     ),
                 ),
@@ -1239,11 +1195,10 @@ else:
         margin=dict(l=20, r=20, t=50, b=20),
         hovermode="x unified",
         title=f"Historical raw data - {export_label}",
-        legend_title="Sensor",
+        legend_title="Sensor ID",
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    # Latest values table
     st.subheader("Latest values in selected period")
     latest_export_table = (
         export_df.sort_values("payload_time_utc")
@@ -1258,19 +1213,18 @@ else:
     )
     latest_export_table = latest_export_table.rename(
         columns={
-            "sensor_label": "Sensor",
+            "sensor_label": "Sensor ID",
             "variable": "Variable",
             "payload_time_utc": "Last timestamp (UTC)",
             "value_display": "Latest value",
         }
     )
     st.dataframe(
-        latest_export_table[["Sensor", "Variable", "Last timestamp (UTC)", "Latest value"]],
+        latest_export_table[["Sensor ID", "Variable", "Last timestamp (UTC)", "Latest value"]],
         use_container_width=True,
         hide_index=True,
     )
 
-    # Raw data table
     st.subheader("Raw data")
     with st.expander("View filtered historical raw data"):
         display_df = export_df.sort_values("payload_time_utc", ascending=False).copy()
@@ -1290,13 +1244,11 @@ else:
                 "display_value",
                 "base_id",
                 "base_name",
-                "sensor_name",
             ]
             if col in display_df.columns
         ]
         st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
 
-    # Downloads
     st.subheader("Downloads")
     csv_bytes = export_df.to_csv(index=False).encode("utf-8")
     png_buffer = build_png_figure(
