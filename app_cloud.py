@@ -288,8 +288,8 @@ REFERENCE_LINES = {
         "limit": 300.0,         # Bq/m³
     },
     "pm2_5": {
-        "recommended": 10.0*10**-9,,    # µg/m³
-        "limit": 25.0*10**-9,,          # µg/m³
+        "recommended": 10.0*10**-9,    # µg/m³
+        "limit": 25.0*10**-9,          # µg/m³
     },
     "pm10": {
         "recommended": 20.0*10**-9,    # kg/m³
