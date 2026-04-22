@@ -292,8 +292,8 @@ REFERENCE_LINES = {
         "limit": 25.0,          # µg/m³
     },
     "pm10": {
-        "recommended": 20.0,    # µg/m³
-        "limit": 45.0,          # µg/m³
+        "recommended": 20.0*10^-9,    # kg/m³
+        "limit": 45.0*10^-9,          # kg/m³
     },
     # CO2: no single EU-wide absolute legal indoor limit.
     # If you want a practical proxy, uncomment and adapt.
