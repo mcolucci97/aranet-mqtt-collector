@@ -440,7 +440,13 @@ def build_sensor_label(sensor_id: str | None) -> str:
 
 
 def safe_sensor_label_from_row(row: pd.Series) -> str:
-    return build_sensor_label(row.get("sensor_id"))
+    sensor_id = str(row.get("sensor_id"))
+    room_name = row.get("room_name")
+
+    if pd.notna(room_name) and str(room_name).strip():
+        return f"{sensor_id} ({room_name})"
+
+    return sensor_id
 
 
 def attach_sensor_metadata_on_id(df: pd.DataFrame, sensors_df: pd.DataFrame) -> pd.DataFrame:
@@ -475,6 +481,19 @@ def attach_sensor_metadata_on_id(df: pd.DataFrame, sensors_df: pd.DataFrame) -> 
 
     return out
 
+def attach_room_metadata(df: pd.DataFrame, room_sensors_df: pd.DataFrame, rooms_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach room_name to dataframe based on sensor_id."""
+    if df.empty or room_sensors_df.empty or rooms_df.empty:
+        df["room_name"] = None
+        return df
+
+    rs = room_sensors_df[["sensor_id", "room_id"]].drop_duplicates()
+    rooms = rooms_df[["room_id", "room_name"]].drop_duplicates()
+
+    out = df.merge(rs, on="sensor_id", how="left")
+    out = out.merge(rooms, on="room_id", how="left")
+
+    return out
 
 def build_png_figure(
     df: pd.DataFrame,
@@ -761,6 +780,7 @@ def load_dashboard_timeseries(
     df = df.rename(columns={"bucket_start_utc": "payload_time_utc", "value_avg": "value_num"})
     df = normalize_timeseries_df(df, time_col="payload_time_utc", value_col="value_num")
     df = attach_sensor_metadata_on_id(df, load_sensors())
+    df = attach_room_metadata(df, load_room_sensors(), load_rooms())
     df["sensor_label"] = df.apply(safe_sensor_label_from_row, axis=1)
     return df
 
@@ -807,6 +827,7 @@ def load_historical_raw(
         df["received_at_utc"] = pd.to_datetime(df["received_at_utc"], errors="coerce", utc=True)
 
     df = attach_sensor_metadata_on_id(df, load_sensors())
+    df = attach_room_metadata(df, load_room_sensors(), load_rooms())
     df["sensor_label"] = df.apply(safe_sensor_label_from_row, axis=1)
     return df
 
