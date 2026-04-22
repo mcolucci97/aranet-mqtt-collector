@@ -288,8 +288,8 @@ REFERENCE_LINES = {
         "limit": 300.0,         # Bq/m³
     },
     "pm2_5": {
-        "recommended": 10.0,    # µg/m³
-        "limit": 25.0,          # µg/m³
+        "recommended": 10.0*10**-9,,    # µg/m³
+        "limit": 25.0*10**-9,,          # µg/m³
     },
     "pm10": {
         "recommended": 20.0*10**-9,    # kg/m³
@@ -568,7 +568,7 @@ def add_reference_lines(fig, variable: str, row: int | None = None, col: int | N
             line_width=2,
             line_dash="dash",
             line_color="gold",
-            annotation_text=f"Recommended: {format_value_with_unit(recommended, variable)}",
+            annotation_text=f"Recommended below: {format_value_with_unit(recommended, variable)}",
             annotation_position="top left",
             **hline_kwargs,
         )
@@ -579,7 +579,7 @@ def add_reference_lines(fig, variable: str, row: int | None = None, col: int | N
             line_width=2,
             line_dash="solid",
             line_color="red",
-            annotation_text=f"Limit: {format_value_with_unit(limit, variable)}",
+            annotation_text=f"Reference value: {format_value_with_unit(limit, variable)}",
             annotation_position="top right",
             **hline_kwargs,
         )
