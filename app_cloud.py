@@ -279,6 +279,30 @@ MAX_DASHBOARD_DAYS = 30
 RAW_FETCH_PAGE_SIZE = 1000
 AGG_FETCH_PAGE_SIZE = 1000
 
+# Reference values used to draw contextual threshold lines on charts.
+# Yellow dashed = recommended / preferred level
+# Red solid = limit / upper reference level
+REFERENCE_LINES = {
+    "radon": {
+        "recommended": 100.0,   # Bq/m³
+        "limit": 300.0,         # Bq/m³
+    },
+    "pm2_5": {
+        "recommended": 10.0,    # µg/m³
+        "limit": 25.0,          # µg/m³
+    },
+    "pm10": {
+        "recommended": 20.0,    # µg/m³
+        "limit": 45.0,          # µg/m³
+    },
+    # CO2: no single EU-wide absolute legal indoor limit.
+    # If you want a practical proxy, uncomment and adapt.
+    "co2": {
+        "recommended": 1000.0,   # practical non-binding proxy
+        "limit": 1500.0,         # practical non-binding proxy
+    },
+}
+
 
 # ============================================================
 # SUPABASE CONNECTION
@@ -519,6 +543,48 @@ def build_mode_string(show_lines: bool, show_points: bool) -> str:
         mode += "+markers" if mode else "markers"
     return mode
 
+def add_reference_lines(fig, variable: str, row: int | None = None, col: int | None = None):
+    """
+    Add contextual reference lines to a Plotly figure.
+
+    The lines are drawn in data coordinates, so they naturally appear only
+    when they fall inside the visible y-axis range.
+    """
+    ref = REFERENCE_LINES.get(variable)
+    if not ref:
+        return fig
+
+    recommended = ref.get("recommended")
+    limit = ref.get("limit")
+
+    hline_kwargs = {}
+    if row is not None and col is not None:
+        hline_kwargs["row"] = row
+        hline_kwargs["col"] = col
+
+    if recommended is not None:
+        fig.add_hline(
+            y=recommended,
+            line_width=2,
+            line_dash="dash",
+            line_color="gold",
+            annotation_text=f"Recommended: {format_value_with_unit(recommended, variable)}",
+            annotation_position="top left",
+            **hline_kwargs,
+        )
+
+    if limit is not None:
+        fig.add_hline(
+            y=limit,
+            line_width=2,
+            line_dash="solid",
+            line_color="red",
+            annotation_text=f"Limit: {format_value_with_unit(limit, variable)}",
+            annotation_position="top right",
+            **hline_kwargs,
+        )
+
+    return fig
 
 # ============================================================
 # DATA LOADING
@@ -972,6 +1038,8 @@ if page_mode == "Dashboard":
             ),
         )
 
+        fig_var = add_reference_lines(fig_var, variable)
+
         layout_kwargs = dict(
             height=420,
             margin=dict(l=20, r=20, t=30, b=20),
@@ -1187,6 +1255,8 @@ else:
         if tick_format:
             axis_updates["tickformat"] = tick_format
         fig_hist.update_yaxes(row=row_idx, col=1, **axis_updates)
+        
+    fig_hist = add_reference_lines(fig_hist, variable, row=row_idx, col=1)
 
     fig_hist.update_xaxes(title_text="Timestamp (UTC)", row=len(available_variables), col=1)
     fig_hist.update_layout(
